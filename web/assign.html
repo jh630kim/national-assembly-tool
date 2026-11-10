@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>요구자료 접수·배분</title>
+  <script src="engine.js"></script>
+  <script src="split.js"></script>
+  <script src="common.js"></script>
+  <style>
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    #preview-area { margin-top:14px; }
+    #preview-area[hidden] { display:none; }
+    .preview-scroll { max-height:320px; overflow:auto; border:1px solid var(--line); margin:10px 0; }
+    .preview-scroll th { position:sticky; top:0; }
+    .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+    .candidates { margin:0; padding-left:18px; }
+    .candidates small { color:var(--muted); }
+    select { font:inherit; font-size:14px; padding:5px; max-width:190px; }
+    details { margin-top:6px; font-size:13px; }
+    summary { cursor:pointer; color:var(--brand); }
+    .helpers { display:grid; grid-template-columns:repeat(2, minmax(130px, 1fr)); gap:2px 10px; margin-top:6px; width:310px; }
+    .helpers label:has(input:disabled) { color:#a0a8b2; }
+    .state-cell .badge { display:block; width:max-content; margin-bottom:4px; }
+    .confirm { white-space:nowrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>요구자료 접수·배분</h1>
+    <p class="lead">요구서를 문항으로 나누어 등록하고, 문항별 주관 과와 협조 과를 확정합니다.</p>
+
+    <section class="panel" aria-labelledby="receive-title">
+      <h2 id="receive-title">① 접수</h2>
+      <div class="toolbar">
+        <label class="file-button">요구서 PDF 선택
+          <input id="pdf-input" type="file" accept="application/pdf,.pdf" multiple>
+        </label>
+        <label class="file-button">문항목록 CSV 불러오기
+          <input id="csv-input" type="file" accept=".csv,text/csv">
+        </label>
+      </div>
+      <div id="preview-area" hidden>
+        <div class="table-wrap" id="summary"></div>
+        <div class="preview-scroll" id="preview"></div>
+        <button id="register" type="button">접수 등록</button>
+      </div>
+      <p class="message" id="receive-message" role="status"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="assign-title">
+      <h2 id="assign-title">② 배분</h2>
+      <p class="message" id="assign-message" role="status"></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>상태</th><th>의원·문항</th><th>요구내용</th><th>후보 3순위</th><th>주관 과</th><th>확정</th></tr>
+          </thead>
+          <tbody id="case-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    const { COLUMNS, itemsToLines, splitLines, checkCounts } = QuestionSplit;
+    const esc = Common.escapeHtml;
+    const engine = ClassificationEngine;
+    const $ = (id) => document.getElementById(id);
+    const PDFJS_DIR = new URL('./lib/pdfjs/', location.href).href;
+    const ASSIGNABLE = ['접수', '재배정요청', '배분확정'];
+
+    let orgNames = [];
+    let pendingRows = [];
+    let pdfjs = null;
+
+    Common.renderNav('assign.html');
+
+    function showMessage(id, text, isError = false) {
+      $(id).textContent = text;
+      $(id).className = isError ? 'message error' : 'message';
+    }
+
+    function now() {
+      return new Date().toISOString();
+    }
+
+    async function getPdfjs() {
+      if (!pdfjs) {
+        pdfjs = await import(`${PDFJS_DIR}pdf.min.mjs`);
+        pdfjs.GlobalWorkerOptions.workerSrc = `${PDFJS_DIR}pdf.worker.min.mjs`;
+      }
+      return pdfjs;
+    }
+
+    async function readPdfLines(file) {
+      const lib = await getPdfjs();
+      const pdf = await lib.getDocument({
+        data: await file.arrayBuffer(), cMapUrl: `${PDFJS_DIR}cmaps/`, cMapPacked: true,
+      }).promise;
+      const lines = [];
+      for (let number = 1; number <= pdf.numPages; number += 1) {
+        const page = await pdf.getPage(number);
+        lines.push(...itemsToLines((await page.getTextContent()).items));
+      }
+      await pdf.destroy();
+      return lines;
+    }
+
+    // 파일별 대조표와 미리보기를 그린다. 불일치·오류가 있으면 등록을 막는다.
+    function renderPreview(rows, failures) {
+      pendingRows = rows;
+      const counts = checkCounts(rows);
+      const summary = counts.map((item) => `<tr><td>${esc(item.파일명)}</td><td>${item.파일명문항수 ?? '-'}</td>
+        <td>${item.뽑은문항수}</td><td>${item.마지막번호}</td><td>${item.번호연속 ? 'O' : 'X'}</td>
+        <td><span class="badge ${item.일치 ? 'ok' : 'bad'}">${item.일치 ? '일치' : '불일치'}</span></td></tr>`);
+      const failed = failures.map((item) => `<tr><td>${esc(item.파일명)}</td><td colspan="4">${esc(item.오류)}</td>
+        <td><span class="badge bad">실패</span></td></tr>`);
+      $('summary').innerHTML = `<table><thead><tr><th>파일명</th><th>파일명의 문항 수</th><th>뽑은 문항 수</th>
+        <th>마지막 번호</th><th>번호 연속</th><th>결과</th></tr></thead><tbody>${[...summary, ...failed].join('')}</tbody></table>`;
+      $('preview').innerHTML = `<table><thead><tr><th>의원</th><th>문항</th><th>요구내용</th><th>세부항목</th><th>비고</th>
+        <th>제출기한</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.의원)}</td><td>${esc(row.문항번호)}</td>
+        <td>${esc(row.요구내용)}</td><td>${esc(row.세부항목)}</td><td>${esc(row.비고)}</td><td>${esc(row.제출기한)}</td></tr>`).join('')}
+        </tbody></table>`;
+      const valid = rows.length > 0 && !failures.length && counts.every((item) => item.일치);
+      $('register').disabled = !valid;
+      $('preview-area').hidden = false;
+      showMessage('receive-message', valid
+        ? `${counts.length}개 파일에서 ${rows.length}문항을 읽었습니다. 표를 확인한 뒤 등록하세요.`
+        : '문항 수가 맞지 않거나 읽지 못한 파일이 있어 등록할 수 없습니다.', !valid);
+    }
+
+    async function handlePdfs(files) {
+      showMessage('receive-message', 'PDF를 읽는 중입니다…');
+      const rows = [];
+      const failures = [];
+      for (const file of files) {
+        try {
+          rows.push(...splitLines(await readPdfLines(file), file.name));
+        } catch (error) {
+          failures.push({ 파일명: file.name, 오류: error.message });
+        }
+      }
+      renderPreview(rows, failures);
+    }
+
+    async function handleCsv(file) {
+      try {
+        const rows = engine.parseCsv(await file.text());
+        const missing = COLUMNS.filter((column) => !(column in (rows[0] || {})));
+        if (missing.length) throw new Error(`필요한 열이 없습니다: ${missing.join(', ')}`);
+        renderPreview(rows, []);
+      } catch (error) {
+        showMessage('receive-message', `CSV를 읽지 못했습니다: ${error.message}`, true);
+      }
+    }
+
+    // 엔진 점수는 우선순위 + 키워드 길이/10이다. 키워드는 최대 9자이므로 정수 부분이 우선순위이다.
+    // 1순위를 기본값으로 쓰되, 처리지침 제3장의 동순위·미매칭은 사람이 보도록 표시한다.
+    function needsCheck(candidates) {
+      if (!candidates.length) return '미매칭';
+      const tied = candidates.length > 1
+        && Math.trunc(candidates[0].점수) === Math.trunc(candidates[1].점수);
+      return tied ? '동순위' : '';
+    }
+
+    function register() {
+      const store = Common.load();
+      const known = new Set(store.cases.map((item) => item.id));
+      let added = 0;
+      for (const row of pendingRows) {
+        const id = `${row.파일명}#${row.문항번호}`;
+        if (known.has(id)) continue;
+        known.add(id);
+        const 후보 = engine.classify(row.요구내용);
+        store.cases.push({
+          ...row, id, 상태: '접수', 주관과: '', 협조과: [], 확정방법: '', 후보, 확인필요: needsCheck(후보), 일시: now(),
+        });
+        store.log.push({ 일시: now(), 작업: '접수', 문항: id, 과: '' });
+        added += 1;
+      }
+      Common.save(store);
+      const skipped = pendingRows.length - added;
+      pendingRows = [];
+      $('preview-area').hidden = true;
+      showMessage('receive-message', `${added}문항을 등록했습니다.${skipped ? ` 이미 등록된 ${skipped}문항은 건너뛰었습니다.` : ''}`);
+      renderCases(store.cases);
+    }
+
+    function candidateHtml(candidates) {
+      if (!candidates.length) return '후보 없음';
+      return `<ol class="candidates">${candidates.map((item) => (
+        `<li>${esc(item.과)} <small>(${esc(item.근거키워드)})</small></li>`)).join('')}</ol>`;
+    }
+
+    function reassignHtml(request) {
+      return `<div class="sub"><span class="badge bad">재배정 요청</span> ${esc(request.과)}: ${esc(request.사유)}
+        ${request.희망과 ? ` → 희망 과 ${esc(request.희망과)}` : ''}${request.경과 ? ' (배분 후 2시간 경과)' : ''}</div>`;
+    }
+
+    function rowHtml(item) {
+      const chosen = item.주관과 || item.후보[0]?.과 || '';
+      const options = orgNames.map((name) => `<option${name === chosen ? ' selected' : ''}>${esc(name)}</option>`).join('');
+      const helpers = orgNames.map((name) => `<label><input type="checkbox" value="${esc(name)}"
+        ${item.협조과.includes(name) ? 'checked' : ''} ${name === chosen ? 'disabled' : ''}> ${esc(name)}</label>`).join('');
+      const confirmed = item.상태 === '배분확정';
+      // 설계서 상태표: 접수·재배정요청·배분확정일 때만 배분할 수 있다.
+      const locked = !ASSIGNABLE.includes(item.상태);
+      return `<tr data-id="${esc(item.id)}"${locked ? ' data-locked="1"' : ''}>
+        <td class="state-cell"><span class="badge ${confirmed ? 'ok' : item.상태 === '재배정요청' ? 'bad' : ''}">${esc(item.상태)}</span>
+          ${item.확인필요 ? `<span class="badge warn">확인필요·${esc(item.확인필요)}</span>` : ''}
+          ${item.확정방법 ? `<span class="sub">${esc(item.확정방법)}</span>` : ''}</td>
+        <td>${esc(item.의원)}<div class="sub">문항 ${esc(item.문항번호)}</div></td>
+        <td>${esc(item.요구내용)}${item.세부항목 ? `<div class="sub">${esc(item.세부항목)}</div>` : ''}
+          ${item.비고 ? `<div class="sub">※ ${esc(item.비고)}</div>` : ''}
+          ${item.상태 === '재배정요청' ? reassignHtml(item.재배정.at(-1)) : ''}</td>
+        <td>${candidateHtml(item.후보)}</td>
+        <td><select aria-label="주관 과"><option value="">과 선택</option>${options}</select>
+          <details><summary>협조 과 <span class="helper-count">${item.협조과.length}</span>개</summary>
+          <div class="helpers">${helpers}</div></details></td>
+        <td><button type="button" class="confirm" ${chosen && !locked ? '' : 'disabled'}>${item.상태 === '접수' ? '확정' : '다시 확정'}</button></td>
+      </tr>`;
+    }
+
+    function renderCases(cases) {
+      $('case-rows').innerHTML = cases.map(rowHtml).join('');
+      renderCount(cases);
+    }
+
+    function confirmCase(row) {
+      const store = Common.load();
+      const item = store.cases.find((entry) => entry.id === row.dataset.id);
+      item.주관과 = row.querySelector('select').value;
+      item.협조과 = [...row.querySelectorAll('.helpers input:checked:not(:disabled)')].map((box) => box.value);
+      item.확정방법 = item.주관과 === item.후보[0]?.과 ? '규칙' : '수정';
+      item.상태 = '배분확정';
+      item.일시 = now();
+      // 재배분 이력도 지우지 않도록 확정할 때마다 기록을 덧붙인다(처리지침 제3장 제5조).
+      store.log.push({ 일시: item.일시, 작업: '배분', 문항: item.id, 과: item.주관과, 협조과: item.협조과, 확정방법: item.확정방법 });
+      Common.save(store);
+      row.outerHTML = rowHtml(item);
+      renderCount(store.cases);
+    }
+
+    function renderCount(cases) {
+      const done = cases.filter((item) => item.상태 === '배분확정').length;
+      showMessage('assign-message', cases.length
+        ? `전체 ${cases.length}문항 · 배분확정 ${done}문항`
+        : '등록된 문항이 없습니다. 위에서 요구서를 접수하세요.');
+    }
+
+    function syncSelection(row) {
+      const chosen = row.querySelector('select').value;
+      row.querySelector('.confirm').disabled = !chosen || Boolean(row.dataset.locked);
+      for (const box of row.querySelectorAll('.helpers input')) {
+        box.disabled = box.value === chosen;
+        if (box.disabled) box.checked = false;
+      }
+      row.querySelector('.helper-count').textContent = row.querySelectorAll('.helpers input:checked').length;
+    }
+
+    async function start() {
+      await engine.initialize('data/배분기준표_보강.csv', 'data/A부_조직도_26개과.csv');
+      orgNames = (await Common.readCsv('data/A부_조직도_26개과.csv')).map((row) => row.과);
+      renderCases(Common.load().cases);
+
+      $('pdf-input').addEventListener('change', async (event) => {
+        const files = [...event.target.files];
+        event.target.value = '';
+        if (files.length) await handlePdfs(files);
+      });
+      $('csv-input').addEventListener('change', async (event) => {
+        const [file] = event.target.files;
+        event.target.value = '';
+        if (file) await handleCsv(file);
+      });
+      $('register').addEventListener('click', register);
+      $('case-rows').addEventListener('click', (event) => {
+        if (event.target.matches('.confirm')) confirmCase(event.target.closest('tr'));
+      });
+      $('case-rows').addEventListener('change', (event) => syncSelection(event.target.closest('tr')));
+    }
+
+    start().catch((error) => {
+      showMessage('assign-message', `자료를 읽지 못했습니다: ${error.message}. 파일을 더블클릭하지 말고 `
+        + 'python -m http.server 8000 -d web 실행 후 http://localhost:8000 으로 여세요.', true);
+    });
+  </script>
+</body>
+</html>

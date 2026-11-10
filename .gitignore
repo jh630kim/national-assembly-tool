@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+build/
+dist/
+.claude/*.local.json
+
+# 비밀값·의존성·생성 결과 (공개 저장소 대비)
+.env
+.env.*
+node_modules/
+결과/
+결과_*
+*.log

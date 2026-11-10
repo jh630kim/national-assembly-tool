@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A부 조직도 · 26개 과</title>
+  <style>
+    :root { color-scheme: light; font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f6f8; color: #172d40; }
+    .topline { height: 6px; background: linear-gradient(90deg, #123b59, #20a696); }
+    main { max-width: 1200px; margin: 0 auto; padding: 44px 24px 64px; }
+    .eyebrow { margin: 0 0 12px; color: #087d76; font-size: 13px; font-weight: 800; letter-spacing: .1em; }
+    h1 { margin: 0; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.045em; }
+    .intro { margin: 14px 0 30px; color: #526778; line-height: 1.7; }
+    .panel { overflow: hidden; border: 1px solid #dbe5eb; border-radius: 18px; background: white; box-shadow: 0 18px 50px rgba(18, 59, 89, .07); }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 24px; border-bottom: 1px solid #e6edf1; }
+    .panel-head h2 { margin: 0; font-size: 18px; }
+    .count { border-radius: 999px; background: #e5f5f1; color: #087d76; padding: 7px 12px; font-size: 13px; font-weight: 800; white-space: nowrap; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; text-align: left; min-width: 790px; }
+    thead { background: #123b59; color: white; }
+    th, td { padding: 15px 18px; vertical-align: top; }
+    th { font-size: 13px; font-weight: 700; white-space: nowrap; }
+    td { border-top: 1px solid #e8eef2; font-size: 14px; line-height: 1.55; }
+    tbody tr:first-child td { border-top: 0; }
+    tbody tr.group-start:not(:first-child) td { border-top: 2px solid #c8dbe4; }
+    tbody tr:hover { background: #f1f8f7; }
+    td:first-child { color: #28617b; font-weight: 700; white-space: nowrap; }
+    td:nth-child(2) { font-weight: 700; white-space: nowrap; }
+    td:last-child { color: #4c6878; }
+    @media (prefers-reduced-motion: no-preference) {
+      tbody tr { animation: row-in .5s both; animation-delay: calc(var(--i) * 24ms); }
+      @keyframes row-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; } }
+    @media (max-width: 680px) { main { padding: 28px 14px 44px; } .panel-head { padding: 18px; } th, td { padding: 12px 14px; } }
+  </style>
+</head>
+<body>
+  <div class="topline" aria-hidden="true"></div>
+  <main>
+    <p class="eyebrow">A부 · 조직 현황</p>
+    <h1>조직도</h1>
+    <p class="intro">실국별 과와 주요업무, 대표키워드를 한눈에 확인할 수 있습니다.</p>
+    <section class="panel" aria-labelledby="table-title">
+      <div class="panel-head"><h2 id="table-title">과별 업무 목록</h2><span class="count">26개 과</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">실국</th><th scope="col">과</th><th scope="col">주요업무</th><th scope="col">대표키워드</th></tr></thead>
+          <tbody>
+            <tr class="group-start" style="--i:0"><td>기획조정실</td><td>기획재정담당관</td><td>예산 편성·결산, 성과관리, 국회 업무 총괄</td><td>예산|결산|세출|성과관리</td></tr>
+            <tr style="--i:1"><td>기획조정실</td><td>혁신행정담당관</td><td>조직·정원, 정부혁신, 행정제도</td><td>조직|정원|직제|정부혁신</td></tr>
+            <tr style="--i:2"><td>기획조정실</td><td>규제개혁법무담당관</td><td>법령 제·개정, 규제개혁, 소송</td><td>법령|시행령|시행규칙|고시</td></tr>
+            <tr style="--i:3"><td>기획조정실</td><td>정보화담당관</td><td>정보시스템 운영, 정보화 예산, 개인정보 보호</td><td>정보시스템|홈페이지|전산|정보화사업</td></tr>
+            <tr class="group-start" style="--i:4"><td>대변인실</td><td>홍보담당관</td><td>언론 대응, 정책 홍보, 보도자료</td><td>홍보|보도자료|언론|광고</td></tr>
+            <tr class="group-start" style="--i:5"><td>감사관실</td><td>감사담당관</td><td>자체감사, 공직기강, 부패방지</td><td>감사|공직기강|징계|부패</td></tr>
+            <tr class="group-start" style="--i:6"><td>운영지원과</td><td>운영지원과</td><td>인사·복무, 청사관리, 업무추진비, 관용차량</td><td>인사|승진|복무|청사</td></tr>
+            <tr class="group-start" style="--i:7"><td>디지털정책국</td><td>디지털정책과</td><td>디지털 전환 정책, AI 행정 도입</td><td>디지털전환|인공지능|AI|디지털플랫폼</td></tr>
+            <tr style="--i:8"><td>디지털정책국</td><td>데이터정책과</td><td>공공데이터 개방, 데이터 표준</td><td>공공데이터|데이터 개방|데이터표준|빅데이터</td></tr>
+            <tr style="--i:9"><td>디지털정책국</td><td>정보보호과</td><td>사이버 보안, 해킹 대응</td><td>사이버|해킹|보안|랜섬웨어</td></tr>
+            <tr style="--i:10"><td>디지털정책국</td><td>공공서비스혁신과</td><td>전자정부 서비스, 온라인 민원</td><td>전자정부|온라인 민원|모바일 신분증|간편인증</td></tr>
+            <tr class="group-start" style="--i:11"><td>지역지원국</td><td>지역정책과</td><td>지역 정책 총괄, 지자체 협력</td><td>지자체|지역정책|자치|지방자치</td></tr>
+            <tr style="--i:12"><td>지역지원국</td><td>지역개발과</td><td>지역개발사업, 기반시설</td><td>지역개발|개발사업|도시재생|기반시설</td></tr>
+            <tr style="--i:13"><td>지역지원국</td><td>균형발전과</td><td>국가균형발전, 인구감소지역</td><td>균형발전|인구감소|소멸|지방이전</td></tr>
+            <tr style="--i:14"><td>지역지원국</td><td>지방재정협력과</td><td>지방교부세, 국고보조금</td><td>교부세|보조금|국고보조|지방재정</td></tr>
+            <tr class="group-start" style="--i:15"><td>안전관리국</td><td>안전정책과</td><td>안전 정책 총괄, 안전 점검 제도</td><td>안전정책|안전점검|안전관리|안전문화</td></tr>
+            <tr style="--i:16"><td>안전관리국</td><td>재난대응과</td><td>재난 대응, 재난 지원금</td><td>재난|태풍|호우|지진</td></tr>
+            <tr style="--i:17"><td>안전관리국</td><td>시설안전과</td><td>공공시설 안전, 노후시설</td><td>시설물|노후시설|교량|터널</td></tr>
+            <tr style="--i:18"><td>안전관리국</td><td>기후위기대응과</td><td>기후위기 적응, 폭염·한파 대책</td><td>기후|폭염|한파|탄소</td></tr>
+            <tr class="group-start" style="--i:19"><td>산업협력국</td><td>산업정책과</td><td>산업 정책, 규제 샌드박스</td><td>산업정책|신산업|규제 샌드박스|첨단산업</td></tr>
+            <tr style="--i:20"><td>산업협력국</td><td>중소기업지원과</td><td>중소기업·소상공인 지원 사업</td><td>중소기업|소상공인|창업|벤처</td></tr>
+            <tr style="--i:21"><td>산업협력국</td><td>국제협력과</td><td>국제기구 협력, 해외 협력사업</td><td>국제기구|ODA|해외 협력|양해각서</td></tr>
+            <tr style="--i:22"><td>산업협력국</td><td>통상협력과</td><td>통상 협상, 수출 지원</td><td>통상|수출|FTA|관세</td></tr>
+            <tr class="group-start" style="--i:23"><td>인재정책국</td><td>인재정책과</td><td>인재 양성 정책, 장학 사업</td><td>인재양성|장학|청년인재|전문인력</td></tr>
+            <tr style="--i:24"><td>인재정책국</td><td>교육훈련과</td><td>공무원·민간 교육훈련</td><td>교육훈련|연수|교육과정|직무교육</td></tr>
+            <tr style="--i:25"><td>인재정책국</td><td>고용지원과</td><td>고용 지원 사업, 일자리</td><td>일자리|고용|취업|청년고용</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
