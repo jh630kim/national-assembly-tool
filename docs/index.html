@@ -4,8 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>국회 요구자료 처리 현황</title>
+  <script src="lib/chartjs/chart.umd.min.js"></script>
   <script src="common.js"></script>
   <style>
+    .chart-box { position:relative; height:260px; margin-top:16px; }
     .counts { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:10px; }
     .count { border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
     .count b { display:block; font-size:26px; line-height:1.2; }
@@ -22,6 +24,7 @@
     <section class="panel">
       <h2>상태별 문항 수</h2>
       <div class="counts" id="counts"></div>
+      <div class="chart-box"><canvas id="status-chart" role="img" aria-label="상태별 문항 수 막대 차트"></canvas></div>
       <p class="message" id="message" role="status"></p>
     </section>
     <section class="panel">
@@ -35,6 +38,26 @@
   </main>
   <script>
     Common.renderNav('index.html');
+
+    // 상태별 문항 수를 가로 막대 차트로 그린다. 숫자 카드와 같은 값이며, 차트가 안 뜨면 카드로 확인한다.
+    function drawChart(cases) {
+      const counts = Common.STATUSES.map((status) => cases.filter((item) => item.상태 === status).length);
+      const canvas = document.getElementById('status-chart');
+      canvas.setAttribute('aria-label', `상태별 문항 수: ${Common.STATUSES.map((status, i) => `${status} ${counts[i]}`).join(', ')}`);
+      new Chart(canvas, {
+        type: 'bar',
+        data: {
+          labels: Common.STATUSES,
+          datasets: [{ label: '문항 수', data: counts, backgroundColor: '#1f4e79', borderRadius: 4 }],
+        },
+        options: {
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { x: { beginAtZero: true, ticks: { precision: 0 } } },
+        },
+      });
+    }
+
     try {
       const { cases } = Common.load();
       document.getElementById('counts').innerHTML = Common.STATUSES.map((status) => {
@@ -42,6 +65,7 @@
         return `<div class="count"><b>${count}</b><span>${status}</span></div>`;
       }).join('');
       document.getElementById('message').textContent = `전체 ${cases.length}문항`;
+      drawChart(cases);
     } catch (error) {
       const message = document.getElementById('message');
       message.className = 'message error';

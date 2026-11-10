@@ -1,6 +1,6 @@
 const path = require('node:path');
 const fs = require('node:fs');
-const engine = require('./web/engine.js');
+const engine = require('./docs/engine.js');
 
 async function main() {
   const data = path.join(__dirname, 'data');

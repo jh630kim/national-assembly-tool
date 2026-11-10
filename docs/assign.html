@@ -4,25 +4,41 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>요구자료 접수·배분</title>
+  <link rel="stylesheet" href="lib/tabulator/tabulator.min.css">
+  <script src="lib/papaparse/papaparse.min.js"></script>
+  <script src="lib/tabulator/tabulator.min.js"></script>
   <script src="engine.js"></script>
   <script src="split.js"></script>
+  <script src="history.js"></script>
   <script src="common.js"></script>
   <style>
     .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
     #preview-area { margin-top:14px; }
     #preview-area[hidden] { display:none; }
-    .preview-scroll { max-height:320px; overflow:auto; border:1px solid var(--line); margin:10px 0; }
-    .preview-scroll th { position:sticky; top:0; }
+    #preview { margin:10px 0; }
     .sub { color:var(--muted); font-size:13px; margin-top:4px; }
     .candidates { margin:0; padding-left:18px; }
     .candidates small { color:var(--muted); }
-    select { font:inherit; font-size:14px; padding:5px; max-width:190px; }
+    select, .filters input { font:inherit; font-size:14px; padding:5px; }
+    select { max-width:190px; }
+    .filters { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:0 0 10px; }
+    .filters input { width:260px; max-width:100%; }
     details { margin-top:6px; font-size:13px; }
     summary { cursor:pointer; color:var(--brand); }
-    .helpers { display:grid; grid-template-columns:repeat(2, minmax(130px, 1fr)); gap:2px 10px; margin-top:6px; width:310px; }
+    .helpers { display:grid; grid-template-columns:repeat(2, minmax(110px, 1fr)); gap:2px 10px; margin-top:6px; }
     .helpers label:has(input:disabled) { color:#a0a8b2; }
+    .past ul { margin:6px 0 4px; padding-left:18px; }
+    .past li { margin-bottom:2px; }
     .state-cell .badge { display:block; width:max-content; margin-bottom:4px; }
     .confirm { white-space:nowrap; }
+    /* Tabulator 기본 서식을 이 프로젝트 화면에 맞춘다. */
+    .tabulator { font:inherit; font-size:14px; border:1px solid var(--line); border-radius:6px; background:var(--panel); }
+    .tabulator .tabulator-header { background:var(--brand-soft); border-bottom:1px solid var(--line); color:var(--ink); }
+    .tabulator .tabulator-header .tabulator-col { background:var(--brand-soft); border-right:0; }
+    .tabulator .tabulator-header .tabulator-col .tabulator-col-content { padding:8px 10px; }
+    .tabulator .tabulator-row { border-bottom:1px solid var(--line); }
+    .tabulator .tabulator-row .tabulator-cell { white-space:normal; border-right:0; padding:8px 10px; text-overflow:clip; }
+    .tabulator-placeholder span { color:var(--muted); font-size:14px; font-weight:400; }
   </style>
 </head>
 <body>
@@ -42,7 +58,7 @@
       </div>
       <div id="preview-area" hidden>
         <div class="table-wrap" id="summary"></div>
-        <div class="preview-scroll" id="preview"></div>
+        <div id="preview"></div>
         <button id="register" type="button">접수 등록</button>
       </div>
       <p class="message" id="receive-message" role="status"></p>
@@ -50,29 +66,36 @@
 
     <section class="panel" aria-labelledby="assign-title">
       <h2 id="assign-title">② 배분</h2>
-      <p class="message" id="assign-message" role="status"></p>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>상태</th><th>의원·문항</th><th>요구내용</th><th>후보 3순위</th><th>주관 과</th><th>확정</th></tr>
-          </thead>
-          <tbody id="case-rows"></tbody>
-        </table>
+      <div class="filters">
+        <label>검색 <input id="search" type="search" placeholder="의원·요구내용·주관 과"></label>
+        <label>상태 <select id="status-filter"><option value="">전체</option></select></label>
       </div>
+      <p class="message" id="assign-message" role="status"></p>
+      <div id="case-table"></div>
     </section>
   </main>
 
   <script type="module">
+    import Fuse from './lib/fusejs/fuse.min.mjs';
+
     const { COLUMNS, itemsToLines, splitLines, checkCounts } = QuestionSplit;
     const esc = Common.escapeHtml;
     const engine = ClassificationEngine;
     const $ = (id) => document.getElementById(id);
     const PDFJS_DIR = new URL('./lib/pdfjs/', location.href).href;
+    // 설계서 상태표: 접수·재배정요청·배분확정일 때만 배분할 수 있다.
     const ASSIGNABLE = ['접수', '재배정요청', '배분확정'];
 
     let orgNames = [];
     let pendingRows = [];
     let pdfjs = null;
+    let caseTable = null;
+    let previewTable = null;
+    const filter = { text: '', status: '' };
+    // 확정 전에 사람이 고른 주관 과·협조 과. 표를 다시 그려도 선택이 사라지지 않게 따로 둔다.
+    const drafts = new Map();
+    const confirmButtons = new Map();
+    const pastCache = new Map();
 
     Common.renderNav('assign.html');
 
@@ -107,6 +130,26 @@
       return lines;
     }
 
+    // ---------- ① 접수 미리보기 ----------
+    function showPreviewTable(rows) {
+      $('preview-area').hidden = false;
+      if (previewTable) {
+        previewTable.replaceData(rows);
+        return;
+      }
+      previewTable = new Tabulator('#preview', {
+        data: rows, height: 320, layout: 'fitColumns', placeholder: '읽은 문항이 없습니다.',
+        columns: [
+          { title: '의원', field: '의원', width: 80 },
+          { title: '문항', field: '문항번호', width: 70, sorter: 'number' },
+          { title: '요구내용', field: '요구내용', widthGrow: 3, minWidth: 220 },
+          { title: '세부항목', field: '세부항목', widthGrow: 2, minWidth: 160 },
+          { title: '비고', field: '비고', widthGrow: 1, minWidth: 120 },
+          { title: '제출기한', field: '제출기한', width: 110 },
+        ],
+      });
+    }
+
     // 파일별 대조표와 미리보기를 그린다. 불일치·오류가 있으면 등록을 막는다.
     function renderPreview(rows, failures) {
       pendingRows = rows;
@@ -118,13 +161,9 @@
         <td><span class="badge bad">실패</span></td></tr>`);
       $('summary').innerHTML = `<table><thead><tr><th>파일명</th><th>파일명의 문항 수</th><th>뽑은 문항 수</th>
         <th>마지막 번호</th><th>번호 연속</th><th>결과</th></tr></thead><tbody>${[...summary, ...failed].join('')}</tbody></table>`;
-      $('preview').innerHTML = `<table><thead><tr><th>의원</th><th>문항</th><th>요구내용</th><th>세부항목</th><th>비고</th>
-        <th>제출기한</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.의원)}</td><td>${esc(row.문항번호)}</td>
-        <td>${esc(row.요구내용)}</td><td>${esc(row.세부항목)}</td><td>${esc(row.비고)}</td><td>${esc(row.제출기한)}</td></tr>`).join('')}
-        </tbody></table>`;
+      showPreviewTable(rows);
       const valid = rows.length > 0 && !failures.length && counts.every((item) => item.일치);
       $('register').disabled = !valid;
-      $('preview-area').hidden = false;
       showMessage('receive-message', valid
         ? `${counts.length}개 파일에서 ${rows.length}문항을 읽었습니다. 표를 확인한 뒤 등록하세요.`
         : '문항 수가 맞지 않거나 읽지 못한 파일이 있어 등록할 수 없습니다.', !valid);
@@ -184,7 +223,21 @@
       pendingRows = [];
       $('preview-area').hidden = true;
       showMessage('receive-message', `${added}문항을 등록했습니다.${skipped ? ` 이미 등록된 ${skipped}문항은 건너뛰었습니다.` : ''}`);
-      renderCases(store.cases);
+      caseTable.replaceData(store.cases);
+      renderCount();
+    }
+
+    // ---------- ② 배분 표 ----------
+    function draftOf(item) {
+      if (!drafts.has(item.id)) {
+        drafts.set(item.id, { 주관과: item.주관과 || item.후보[0]?.과 || '', 협조과: [...item.협조과] });
+      }
+      return drafts.get(item.id);
+    }
+
+    function pastOf(item) {
+      if (!pastCache.has(item.id)) pastCache.set(item.id, PastRequests.find(item.요구내용));
+      return pastCache.get(item.id);
     }
 
     function candidateHtml(candidates) {
@@ -198,71 +251,154 @@
         ${request.희망과 ? ` → 희망 과 ${esc(request.희망과)}` : ''}${request.경과 ? ' (배분 후 2시간 경과)' : ''}</div>`;
     }
 
-    function rowHtml(item) {
-      const chosen = item.주관과 || item.후보[0]?.과 || '';
-      const options = orgNames.map((name) => `<option${name === chosen ? ' selected' : ''}>${esc(name)}</option>`).join('');
-      const helpers = orgNames.map((name) => `<label><input type="checkbox" value="${esc(name)}"
-        ${item.협조과.includes(name) ? 'checked' : ''} ${name === chosen ? 'disabled' : ''}> ${esc(name)}</label>`).join('');
+    // 비슷한 과거 요구는 참고용이다. 배분 후보·확정에는 쓰지 않는다.
+    function pastHtml(item) {
+      const past = pastOf(item);
+      if (!past.건수) return '<div class="sub">비슷한 과거 요구 없음</div>';
+      const list = past.최근.map((row) => `<li>${esc(row.접수번호)} ${esc(row.요구내용)} → ${esc(row.배분과)} · ${esc(row.처리상태)}</li>`).join('');
+      return `<details class="past"><summary>비슷한 과거 요구 ${past.건수}건 · 주로 ${esc(past.주로.과)}(${past.주로.건수}건)</summary>
+        <ul>${list}</ul><div class="sub">주제어 「${esc(past.주제)}」로 찾은 참고 자료이며 배분을 정하지 않습니다.</div></details>`;
+    }
+
+    function statusFormatter(cell) {
+      const item = cell.getData();
       const confirmed = item.상태 === '배분확정';
-      // 설계서 상태표: 접수·재배정요청·배분확정일 때만 배분할 수 있다.
-      const locked = !ASSIGNABLE.includes(item.상태);
-      return `<tr data-id="${esc(item.id)}"${locked ? ' data-locked="1"' : ''}>
-        <td class="state-cell"><span class="badge ${confirmed ? 'ok' : item.상태 === '재배정요청' ? 'bad' : ''}">${esc(item.상태)}</span>
-          ${item.확인필요 ? `<span class="badge warn">확인필요·${esc(item.확인필요)}</span>` : ''}
-          ${item.확정방법 ? `<span class="sub">${esc(item.확정방법)}</span>` : ''}</td>
-        <td>${esc(item.의원)}<div class="sub">문항 ${esc(item.문항번호)}</div></td>
-        <td>${esc(item.요구내용)}${item.세부항목 ? `<div class="sub">${esc(item.세부항목)}</div>` : ''}
-          ${item.비고 ? `<div class="sub">※ ${esc(item.비고)}</div>` : ''}
-          ${item.상태 === '재배정요청' ? reassignHtml(item.재배정.at(-1)) : ''}</td>
-        <td>${candidateHtml(item.후보)}</td>
-        <td><select aria-label="주관 과"><option value="">과 선택</option>${options}</select>
-          <details><summary>협조 과 <span class="helper-count">${item.협조과.length}</span>개</summary>
-          <div class="helpers">${helpers}</div></details></td>
-        <td><button type="button" class="confirm" ${chosen && !locked ? '' : 'disabled'}>${item.상태 === '접수' ? '확정' : '다시 확정'}</button></td>
-      </tr>`;
+      return `<div class="state-cell"><span class="badge ${confirmed ? 'ok' : item.상태 === '재배정요청' ? 'bad' : ''}">${esc(item.상태)}</span>
+        ${item.확인필요 ? `<span class="badge warn">확인필요·${esc(item.확인필요)}</span>` : ''}
+        ${item.확정방법 ? `<span class="sub">${esc(item.확정방법)}</span>` : ''}</div>`;
     }
 
-    function renderCases(cases) {
-      $('case-rows').innerHTML = cases.map(rowHtml).join('');
-      renderCount(cases);
+    function contentFormatter(cell) {
+      const item = cell.getData();
+      return `${esc(item.요구내용)}${item.세부항목 ? `<div class="sub">${esc(item.세부항목)}</div>` : ''}
+        ${item.비고 ? `<div class="sub">※ ${esc(item.비고)}</div>` : ''}
+        ${item.상태 === '재배정요청' ? reassignHtml(item.재배정.at(-1)) : ''}${pastHtml(item)}`;
     }
 
-    function confirmCase(row) {
+    function updateConfirmButton(item) {
+      const button = confirmButtons.get(item.id);
+      if (button) button.disabled = !draftOf(item).주관과 || !ASSIGNABLE.includes(item.상태);
+    }
+
+    function deptFormatter(cell) {
+      const item = cell.getData();
+      const draft = draftOf(item);
+      const box = document.createElement('div');
+      const options = orgNames.map((name) => `<option${name === draft.주관과 ? ' selected' : ''}>${esc(name)}</option>`).join('');
+      const helpers = orgNames.map((name) => `<label><input type="checkbox" value="${esc(name)}"
+        ${draft.협조과.includes(name) ? 'checked' : ''} ${name === draft.주관과 ? 'disabled' : ''}> ${esc(name)}</label>`).join('');
+      box.innerHTML = `<select aria-label="주관 과"><option value="">과 선택</option>${options}</select>
+        <details><summary>협조 과 <span class="helper-count">${draft.협조과.length}</span>개</summary>
+        <div class="helpers">${helpers}</div></details>`;
+      const count = box.querySelector('.helper-count');
+      box.querySelector('select').addEventListener('change', (event) => {
+        draft.주관과 = event.target.value;
+        for (const check of box.querySelectorAll('.helpers input')) {
+          check.disabled = check.value === draft.주관과;
+          if (check.disabled) check.checked = false;
+        }
+        draft.협조과 = [...box.querySelectorAll('.helpers input:checked')].map((check) => check.value);
+        count.textContent = draft.협조과.length;
+        updateConfirmButton(cell.getData());
+      });
+      box.querySelector('.helpers').addEventListener('change', () => {
+        draft.협조과 = [...box.querySelectorAll('.helpers input:checked:not(:disabled)')].map((check) => check.value);
+        count.textContent = draft.협조과.length;
+      });
+      return box;
+    }
+
+    function confirmFormatter(cell) {
+      const item = cell.getData();
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'confirm';
+      button.textContent = item.상태 === '접수' ? '확정' : '다시 확정';
+      confirmButtons.set(item.id, button);
+      updateConfirmButton(item);
+      button.addEventListener('click', () => confirmCase(item.id));
+      return button;
+    }
+
+    function confirmCase(id) {
       const store = Common.load();
-      const item = store.cases.find((entry) => entry.id === row.dataset.id);
-      item.주관과 = row.querySelector('select').value;
-      item.협조과 = [...row.querySelectorAll('.helpers input:checked:not(:disabled)')].map((box) => box.value);
+      const item = store.cases.find((entry) => entry.id === id);
+      const draft = drafts.get(id);
+      item.주관과 = draft.주관과;
+      item.협조과 = draft.협조과.filter((name) => name !== item.주관과);
       item.확정방법 = item.주관과 === item.후보[0]?.과 ? '규칙' : '수정';
       item.상태 = '배분확정';
       item.일시 = now();
       // 재배분 이력도 지우지 않도록 확정할 때마다 기록을 덧붙인다(처리지침 제3장 제5조).
       store.log.push({ 일시: item.일시, 작업: '배분', 문항: item.id, 과: item.주관과, 협조과: item.협조과, 확정방법: item.확정방법 });
       Common.save(store);
-      row.outerHTML = rowHtml(item);
-      renderCount(store.cases);
+      drafts.set(id, { 주관과: item.주관과, 협조과: [...item.협조과] });
+      const row = caseTable.getRow(id);
+      row.update(item);
+      row.reformat();
+      renderCount();
     }
 
-    function renderCount(cases) {
+    function renderCount() {
+      const cases = Common.load().cases;
       const done = cases.filter((item) => item.상태 === '배분확정').length;
-      showMessage('assign-message', cases.length
-        ? `전체 ${cases.length}문항 · 배분확정 ${done}문항`
-        : '등록된 문항이 없습니다. 위에서 요구서를 접수하세요.');
+      if (!cases.length) {
+        showMessage('assign-message', '등록된 문항이 없습니다. 위에서 요구서를 접수하세요.');
+        return;
+      }
+      const shown = caseTable?.getDataCount('active') ?? cases.length;
+      showMessage('assign-message', `전체 ${cases.length}문항 · 배분확정 ${done}문항 · 표시 ${shown}문항`);
     }
 
-    function syncSelection(row) {
-      const chosen = row.querySelector('select').value;
-      row.querySelector('.confirm').disabled = !chosen || Boolean(row.dataset.locked);
-      for (const box of row.querySelectorAll('.helpers input')) {
-        box.disabled = box.value === chosen;
-        if (box.disabled) box.checked = false;
-      }
-      row.querySelector('.helper-count').textContent = row.querySelectorAll('.helpers input:checked').length;
+    function matchesFilter(item) {
+      if (filter.status && item.상태 !== filter.status) return false;
+      const text = filter.text.trim();
+      if (!text) return true;
+      return [item.의원, item.문항번호, item.요구내용, item.세부항목, item.비고, item.주관과, item.상태]
+        .join(' ').includes(text);
+    }
+
+    function buildCaseTable(cases) {
+      caseTable = new Tabulator('#case-table', {
+        data: cases, index: 'id', layout: 'fitColumns', renderVertical: 'basic',
+        placeholder: '등록된 문항이 없습니다. 위에서 요구서를 접수하세요.',
+        columns: [
+          {
+            title: '상태', field: '상태', width: 120, formatter: statusFormatter,
+            sorter: (a, b) => Common.STATUSES.indexOf(a) - Common.STATUSES.indexOf(b),
+          },
+          {
+            title: '의원·문항', field: '의원', width: 110,
+            formatter: (cell) => `${esc(cell.getValue())}<div class="sub">문항 ${esc(cell.getData().문항번호)}</div>`,
+            sorter: (a, b, aRow, bRow) => a.localeCompare(b, 'ko')
+              || Number(aRow.getData().문항번호) - Number(bRow.getData().문항번호),
+          },
+          { title: '요구내용', field: '요구내용', widthGrow: 3, minWidth: 240, formatter: contentFormatter },
+          { title: '후보 3순위', field: '후보', width: 200, headerSort: false, formatter: (cell) => candidateHtml(cell.getValue()) },
+          { title: '주관 과', field: '주관과', width: 250, headerSort: false, formatter: deptFormatter },
+          { title: '확정', field: '상태', width: 100, headerSort: false, formatter: confirmFormatter },
+        ],
+      });
+      caseTable.on('tableBuilt', () => {
+        caseTable.setFilter(matchesFilter);
+        renderCount();
+      });
+      caseTable.on('dataFiltered', () => renderCount());
+      // 협조 과 목록과 비슷한 과거 요구를 펼치거나 접으면 행 높이가 달라진다. Tabulator는 처음 그린
+      // 높이를 유지해 내용이 잘리므로, 펼침 상태가 바뀐 행의 높이를 다시 계산한다.
+      // toggle 이벤트는 위로 전달되지 않아 캡처 단계에서 받는다.
+      $('case-table').addEventListener('toggle', (event) => {
+        const element = event.target.closest('.tabulator-row');
+        caseTable.getRows().find((row) => row.getElement() === element)?.normalizeHeight();
+      }, true);
     }
 
     async function start() {
       await engine.initialize('data/배분기준표_보강.csv', 'data/A부_조직도_26개과.csv');
       orgNames = (await Common.readCsv('data/A부_조직도_26개과.csv')).map((row) => row.과);
-      renderCases(Common.load().cases);
+      PastRequests.init(await Common.readCsv('data/접수대장.csv'), Fuse);
+      $('status-filter').insertAdjacentHTML('beforeend', Common.STATUSES.map((name) => `<option>${esc(name)}</option>`).join(''));
+      buildCaseTable(Common.load().cases);
 
       $('pdf-input').addEventListener('change', async (event) => {
         const files = [...event.target.files];
@@ -275,15 +411,19 @@
         if (file) await handleCsv(file);
       });
       $('register').addEventListener('click', register);
-      $('case-rows').addEventListener('click', (event) => {
-        if (event.target.matches('.confirm')) confirmCase(event.target.closest('tr'));
+      $('search').addEventListener('input', (event) => {
+        filter.text = event.target.value;
+        caseTable.refreshFilter();
       });
-      $('case-rows').addEventListener('change', (event) => syncSelection(event.target.closest('tr')));
+      $('status-filter').addEventListener('change', (event) => {
+        filter.status = event.target.value;
+        caseTable.refreshFilter();
+      });
     }
 
     start().catch((error) => {
       showMessage('assign-message', `자료를 읽지 못했습니다: ${error.message}. 파일을 더블클릭하지 말고 `
-        + 'python -m http.server 8000 -d web 실행 후 http://localhost:8000 으로 여세요.', true);
+        + 'python -m http.server 8000 -d docs 실행 후 http://localhost:8000 으로 여세요.', true);
     });
   </script>
 </body>

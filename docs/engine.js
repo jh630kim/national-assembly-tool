@@ -4,35 +4,13 @@
   let rules = null;
   let departments = null;
 
+  // \uBE0C\uB77C\uC6B0\uC800\uB294 \uD398\uC774\uC9C0\uAC00 \uBD88\uB7EC\uC628 \uC804\uC5ED Papa\uB97C, Node\uB294 lib \uD3F4\uB354\uC758 \uAC19\uC740 \uD30C\uC77C\uC744 \uC4F4\uB2E4.
+  const Papa = root.Papa || require('./lib/papaparse/papaparse.min.js');
+
+  // Papa Parse\uB85C CSV\uB97C \uC77D\uB294\uB2E4. \uB530\uC634\uD45C \uC548\uC758 \uC27C\uD45C\u00B7\uC904\uBC14\uAFC8\uACFC BOM\uC744 \uCC98\uB9AC\uD558\uACE0, \uBAA8\uB4E0 \uC5F4\uC774 \uC788\uAC8C \uBE48 \uCE78\uC740 ''\uB85C \uCC44\uC6B4\uB2E4.
   function parseCsv(text) {
-    const rows = [];
-    let row = [];
-    let cell = '';
-    let quoted = false;
-    const source = text.replace(/^\uFEFF/, '');
-    for (let i = 0; i < source.length; i += 1) {
-      const char = source[i];
-      if (char === '"' && quoted && source[i + 1] === '"') {
-        cell += '"';
-        i += 1;
-      } else if (char === '"') {
-        quoted = !quoted;
-      } else if (char === ',' && !quoted) {
-        row.push(cell);
-        cell = '';
-      } else if ((char === '\n' || char === '\r') && !quoted) {
-        if (char === '\r' && source[i + 1] === '\n') i += 1;
-        row.push(cell);
-        if (row.some((value) => value !== '')) rows.push(row);
-        row = [];
-        cell = '';
-      } else {
-        cell += char;
-      }
-    }
-    row.push(cell);
-    if (row.some((value) => value !== '')) rows.push(row);
-    const headers = rows.shift();
+    const parsed = Papa.parse(text.replace(/^\uFEFF/, ''), { skipEmptyLines: 'greedy' });
+    const [headers, ...rows] = parsed.data;
     return rows.map((values) => Object.fromEntries(
       headers.map((header, index) => [header, values[index] ?? ''])
     ));
