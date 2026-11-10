@@ -167,3 +167,12 @@
 * 표에 정한 라이브러리는 치명적인 사유가 없으면 쓴다. Papa Parse(CSV), Chart.js(차트), Fuse.js(비슷한 요구 찾기), Tabulator(표)를 `docs/lib/`에 파일로 둔다.
 * 과거 접수대장은 정해진 문형이라 문형을 뺀 주제어로 검색하며, 결과는 참고용이고 배분 후보·확정에 쓰지 않는다.
 * Tabulator 행 안에서 펼침 영역을 쓰면 행 높이를 다시 계산해야 내용이 잘리지 않는다.
+
+## [20261110]_서버 함수와 저장 방식 전환 규칙
+
+* 사용자가 요청에 `web/`이라고 쓰면 실제 폴더 `docs/`로 이해한다. Vercel은 Root Directory를 `docs`로 두므로 서버 함수는 `docs/api/`, 의존성 파일은 `docs/package.json`에 둔다.
+* 상태 규칙은 `docs/flow.js`의 `apply(db, 요청, 조직도)` 하나에 둔다. 브라우저 저장(`common.js`의 `dispatch`)과 서버(`docs/server.mjs`)가 같은 파일을 쓰고, 검증을 모두 마친 뒤에만 `db`를 바꾼다. 오류 코드는 순서 불일치 409, 조직도 밖 과·필수값 없음 400, 담당 아닌 과 403, 없는 문항 404이다.
+* `*.vercel.app`에서는 `/api/app`에, 그 밖에서는 `localStorage`에 저장하고 화면 위쪽에 저장 위치를 표시한다. 시험용으로 `?storage=server|local`로 바꿀 수 있다.
+* 서버 함수 파일은 `.mjs`로 쓴다. `package.json`에 `"type": "module"`을 넣으면 기존 Node 스크립트(`test_engine.js` 등)가 깨진다.
+* 토큰(`BLOB_READ_WRITE_TOKEN`)은 코드·`docs/` 화면 코드에 쓰지 않는다. Vercel에서는 OIDC로 인증되고, 토큰이 필요하면 Vercel 환경변수에만 둔다.
+* 과거 이력은 사용자 요청에 따라 1순위 근거 키워드가 든 과거 요구를 Fuse.js 정확 일치로 찾아 「n건 · 주로 ○○과」와 최근 5건을 보여 준다. 앞의 주제어 검색 규칙은 이 규칙으로 대체되었으며, 결과는 계속 참고용이다.

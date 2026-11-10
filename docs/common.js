@@ -1,16 +1,21 @@
-// 시작·배분·현업 회신·취합 화면이 함께 쓰는 저장, 자료 읽기, 이동 단추
+// 시작·배분·현업 회신 화면이 함께 쓰는 기록 읽기·저장, 자료 읽기, 이동 단추
+// 저장 위치: *.vercel.app이면 서버(/api/app), 그 밖에는 이 브라우저(localStorage).
 (function (root) {
   'use strict';
 
   const STORAGE_KEY = '국회요구자료.처리기록.v1';
+  const API_PATH = '/api/app';
   const STATUSES = ['접수', '배분확정', '회신중', '회신완료', '확정', '재배정요청', '보완요청'];
-  // 아직 만들지 않은 화면은 href 없이 「준비 중」으로 보여 준다.
   const PAGES = [
     { label: '시작 화면', href: 'index.html' },
     { label: '배분', href: 'assign.html' },
     { label: '현업 회신', href: 'dept.html' },
     { label: '취합', href: null },
   ];
+  const MODE_NOTE = {
+    server: '저장 위치: 서버(Vercel Blob) · 이 주소를 여는 모든 사람이 같은 기록을 봅니다.',
+    local: '저장 위치: 이 브라우저(localStorage) · 이 브라우저에만 저장되며 다른 사람에게 보이지 않습니다.',
+  };
 
   const STYLE = `
     :root { --ink:#1f2933; --muted:#5f6c7b; --line:#d5dbe3; --bg:#f4f6f9; --panel:#fff;
@@ -28,6 +33,9 @@
     .nav a:hover { background:rgba(255,255,255,.16); }
     .nav a[aria-current=page] { background:#fff; color:var(--brand); font-weight:700; }
     .nav span { opacity:.6; }
+    .store-note { padding:6px 20px; font-size:13px; border-bottom:1px solid var(--line); }
+    .store-note.server { background:var(--ok-soft); color:var(--ok); }
+    .store-note.local { background:var(--warn-soft); color:var(--warn); }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px 20px; margin-bottom:18px; }
     button, .file-button { font:inherit; font-size:14px; padding:6px 14px; border-radius:6px; cursor:pointer;
       border:1px solid var(--brand); background:var(--brand); color:#fff; display:inline-block; }
@@ -49,17 +57,20 @@
     .message.error { color:var(--bad); font-weight:700; }
   `;
 
-  function emptyStore() {
-    return { cases: [], log: [] };
+  // ?storage=server 또는 ?storage=local로 저장 위치를 바꿔 시험할 수 있다(로컬에서 서버 모드 확인용).
+  function storageMode() {
+    const forced = new URLSearchParams(location.search).get('storage');
+    if (forced === 'server' || forced === 'local') return forced;
+    return /\.vercel\.app$/i.test(location.hostname) ? 'server' : 'local';
   }
 
-  function load() {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : emptyStore();
-  }
+  const mode = storageMode();
+  let orgPromise = null;
 
-  function save(store) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]
+    ));
   }
 
   async function readCsv(path) {
@@ -68,10 +79,53 @@
     return root.ClassificationEngine.parseCsv(await response.text());
   }
 
-  function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"']/g, (char) => (
-      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]
-    ));
+  // 조직도(과 이름 목록). 브라우저 저장 모드에서 flow.apply가 쓴다.
+  function loadOrg() {
+    orgPromise = orgPromise || readCsv('data/A부_조직도_26개과.csv');
+    return orgPromise;
+  }
+
+  async function callApi(method, body) {
+    let response;
+    try {
+      response = await fetch(API_PATH, {
+        method,
+        ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+      });
+    } catch (error) {
+      throw new Error(`서버에 연결하지 못했습니다: ${error.message}`);
+    }
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+    return { code: response.status, body: data };
+  }
+
+  // 기록 전체({cases, log})를 읽는다. 실패하면 오류를 던진다.
+  async function load() {
+    if (mode === 'server') {
+      const { code, body } = await callApi('GET');
+      if (code !== 200 || !body || !Array.isArray(body.cases)) {
+        throw new Error((body && body.error) || `서버 응답 오류 (${code})`);
+      }
+      return body;
+    }
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? JSON.parse(saved) : { cases: [], log: [] };
+  }
+
+  // 요청 1건을 처리하고 {code, body}를 돌려준다. 서버 모드는 /api/app에, 브라우저 저장 모드는
+  // 같은 flow.apply에 맡기므로 두 방식의 상태 규칙과 오류 코드가 같다.
+  async function dispatch(request) {
+    if (mode === 'server') return callApi('POST', request);
+    const db = await load();
+    const org = await loadOrg();
+    const result = root.Flow.apply(db, JSON.parse(JSON.stringify(request)), org);
+    if (result.code === 200) localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+    return result;
   }
 
   function renderNav(current) {
@@ -81,10 +135,12 @@
     const links = PAGES.map((page) => {
       if (!page.href) return `<span title="준비 중">${page.label} (준비 중)</span>`;
       const mark = page.href === current ? ' aria-current="page"' : '';
-      return `<a href="${page.href}"${mark}>${page.label}</a>`;
+      return `<a href="${page.href}${mode === 'local' && !location.search.includes('storage=') ? '' : location.search}"${mark}>${page.label}</a>`;
     }).join('');
-    document.body.insertAdjacentHTML('afterbegin', `<nav class="nav" aria-label="화면 이동">${links}</nav>`);
+    document.body.insertAdjacentHTML('afterbegin',
+      `<nav class="nav" aria-label="화면 이동">${links}</nav>`
+      + `<div class="store-note ${mode}" role="status">${MODE_NOTE[mode]}</div>`);
   }
 
-  root.Common = { STATUSES, load, save, readCsv, escapeHtml, renderNav };
+  root.Common = { mode, STATUSES, load, dispatch, readCsv, escapeHtml, renderNav };
 })(globalThis);

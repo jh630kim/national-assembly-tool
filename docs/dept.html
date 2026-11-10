@@ -8,18 +8,27 @@
   <script src="engine.js"></script>
   <script src="lib/sheetjs/xlsx.mini.min.js"></script>
   <script src="check.js"></script>
+  <script src="flow.js"></script>
+  <script src="history.js"></script>
   <script src="common.js"></script>
   <style>
     .dept-select { display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-weight:700; }
     select, textarea, input[type=text] { font:inherit; font-size:14px; padding:5px; }
     .sub { color:var(--muted); font-size:13px; margin-top:4px; }
-    .state-cell .badge { display:block; width:max-content; margin-bottom:4px; }
-    tr.detail > td { background:#f8fafc; }
-    .issues { margin:6px 0 10px; padding-left:18px; }
-    .field { display:block; margin:8px 0; font-size:14px; }
-    .field textarea, .field input[type=text] { display:block; width:100%; max-width:620px; margin-top:3px; }
-    .row-actions { display:flex; gap:8px; }
-    td button, td .file-button { white-space:nowrap; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(420px, 1fr)); gap:14px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; display:flex; flex-direction:column; gap:8px; }
+    .card-head { display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; align-items:flex-start; }
+    .card .question { margin:0; font-weight:700; }
+    .card details { font-size:13px; }
+    summary { cursor:pointer; color:var(--brand); }
+    .past ul { margin:6px 0 4px; padding-left:18px; }
+    .past li { margin-bottom:2px; }
+    .issues { margin:4px 0 6px; padding-left:18px; font-size:14px; }
+    .box { border:1px solid var(--line); border-radius:6px; padding:8px 10px; background:#f8fafc; font-size:14px; }
+    .field { display:block; font-size:14px; }
+    .field textarea, .field input[type=text] { display:block; width:100%; margin-top:3px; }
+    .row-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .empty { color:var(--muted); padding:20px; text-align:center; background:var(--panel); border:1px dashed var(--line); border-radius:8px; }
   </style>
 </head>
 <body>
@@ -27,33 +36,36 @@
     <h1>현업 회신</h1>
     <p class="lead">우리 과에 배분된 문항을 확인하고, 회신 엑셀을 올려 점검한 뒤 제출합니다.</p>
     <section class="panel">
-      <label class="dept-select">내 과
-        <select id="dept"><option value="">과 선택</option></select>
-      </label>
+      <div class="row-actions">
+        <label class="dept-select">내 과
+          <select id="dept"><option value="">과 선택</option></select>
+        </label>
+        <button id="refresh" type="button" class="ghost">새로고침</button>
+      </div>
       <p class="message" id="message" role="status"></p>
     </section>
-    <section class="panel">
-      <h2>배분받은 문항</h2>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>상태</th><th>의원·문항</th><th>요구내용</th><th>회신 기한</th><th>회신</th><th>재배정</th></tr></thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
+    <section aria-label="배분받은 문항">
+      <div class="cards" id="cards"></div>
     </section>
   </main>
 
   <script type="module">
+    import Fuse from './lib/fusejs/fuse.min.mjs';
+
     const esc = Common.escapeHtml;
     const $ = (id) => document.getElementById(id);
-    const OPEN_STATES = ['배분확정', '회신중', '보완요청'];
+    const OPEN_STATES = Flow.REPLYABLE;
     const TWO_HOURS = 2 * 60 * 60 * 1000;
     const DAY = 24 * 60 * 60 * 1000;
 
     let orgNames = [];
     let dept = '';
-    // 펼쳐진 행: { id, type: 'reply' | 'reassign', fileName, result }
-    let panel = null;
+    let db = { cases: [], log: [] };
+    // 카드마다 아직 제출하지 않은 입력을 보관한다.
+    const uploads = new Map();
+    const memos = new Map();
+    const reassigning = new Map();
+    const pastCache = new Map();
 
     Common.renderNav('dept.html');
 
@@ -67,182 +79,242 @@
       return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
     }
 
-    function assignedAt(store, id) {
-      return store.log.filter((entry) => entry.작업 === '배분' && entry.문항 === id).at(-1)?.일시;
+    function assignedAt(item) {
+      return db.log.filter((entry) => entry.작업 === '배분' && entry.문항 === item.id).at(-1)?.일시 || item.일시;
     }
 
     // 회신 기한은 배분일부터 3일과 의원실 제출기한 중 빠른 날이다(처리지침 제4장 제6조).
-    function replyDue(item, assigned) {
-      const date = new Date(assigned);
+    function replyDue(item) {
+      const date = new Date(assignedAt(item));
       date.setDate(date.getDate() + 3);
       const threeDays = localDate(date);
       return threeDays < item.제출기한 ? threeDays : item.제출기한;
     }
 
-    function dueHtml(due, item) {
+    function dueHtml(item, replied) {
+      const due = replyDue(item);
       const left = (Date.parse(due) - Date.parse(localDate(new Date()))) / DAY;
       let badge = '';
-      if (OPEN_STATES.includes(item.상태) && !item.회신?.[dept]) {
+      if (OPEN_STATES.includes(item.상태) && !replied) {
         if (left < 0) badge = '<span class="badge bad">기한 경과</span>';
         else if (left <= 3) badge = `<span class="badge warn">${left}일 남음</span>`;
       }
-      return `${esc(due)}<div class="sub">${badge}</div>`;
+      return `<div class="sub">회신 기한 ${esc(due)} ${badge}</div>`;
     }
 
-    function replyCell(item) {
-      const reply = item.회신?.[dept];
-      const done = reply ? `<div class="sub">${esc(reply.파일명)}<br>확인필요 ${reply.확인필요.length}건</div>` : '';
-      if (!OPEN_STATES.includes(item.상태)) return done || '<span class="sub">-</span>';
-      return `<label class="file-button">${reply ? '다시 올리기' : '엑셀 올리기'}
-        <input class="reply-file" type="file" accept=".xlsx"></label>${done}`;
+    // 비슷한 과거 요구: 1순위 근거 키워드가 든 과거 요구(참고용)
+    function pastHtml(item) {
+      if (!pastCache.has(item.id)) pastCache.set(item.id, PastRequests.find(item.후보?.[0]?.근거키워드));
+      const past = pastCache.get(item.id);
+      if (!past.건수) return '<div class="sub">비슷한 과거 요구 없음</div>';
+      const list = past.최근.map((row) => `<li>${esc(row.접수번호)} ${esc(row.요구내용)} → ${esc(row.배분과)} · ${esc(row.처리상태)}</li>`).join('');
+      return `<details class="past"><summary>비슷한 과거 요구 ${past.건수}건 · 주로 ${esc(past.주로.과)}(${past.주로.건수}건)</summary>
+        <ul>${list}</ul><div class="sub">1순위 근거 키워드: 「${esc(past.키워드)}」 · 이 키워드가 든 과거 요구이며, 참고용입니다.</div></details>`;
     }
 
     function issuesHtml(issues) {
-      if (!issues.length) return '<p><span class="badge ok">이상 없음</span></p>';
-      return `<p><span class="badge warn">확인필요 ${issues.length}건</span></p><ul class="issues">${issues.map((issue) => (
+      if (!issues.length) return '<span class="badge ok">이상 없음</span>';
+      return `<span class="badge warn">확인필요 ${issues.length}건</span><ul class="issues">${issues.map((issue) => (
         `<li><b>${esc(issue.항목)}</b> ${esc(issue.내용)}</li>`)).join('')}</ul>`;
     }
 
-    function panelHtml(item) {
-      if (panel?.id !== item.id) return '';
-      if (panel.type === 'reply') {
-        return `<tr class="detail"><td colspan="6"><b>${esc(panel.fileName)}</b> 점검 결과 (데이터 ${panel.result.행.length}행)
-          ${issuesHtml(panel.result.확인필요)}
-          <label class="field">메모 (자료 없음 등)<textarea id="memo" rows="2"></textarea></label>
-          <div class="row-actions"><button type="button" class="submit-reply">회신 제출</button>
-          <button type="button" class="ghost cancel">취소</button></div></td></tr>`;
-      }
-      const options = orgNames.filter((name) => name !== dept).map((name) => `<option>${esc(name)}</option>`).join('');
-      const late = Date.now() - new Date(panel.assigned).getTime() > TWO_HOURS;
-      return `<tr class="detail"><td colspan="6">${late ? '<p><span class="badge warn">배분 후 2시간 경과</span></p>' : ''}
-        <label class="field">사유 (필수)<input id="reason" type="text"></label>
-        <label class="field">희망 과<select id="wish"><option value="">선택 안 함</option>${options}</select></label>
-        <div class="row-actions"><button type="button" class="submit-reassign">재배정 요청</button>
-        <button type="button" class="ghost cancel">취소</button></div></td></tr>`;
+    function submittedHtml(reply) {
+      if (!reply) return '';
+      return `<div class="box"><b>제출한 회신</b> ${esc(reply.파일명)} · 확인필요 ${reply.확인필요.length}건
+        ${reply.메모 ? `<div class="sub">메모: ${esc(reply.메모)}</div>` : ''}</div>`;
     }
 
-    function rowHtml(item, store) {
-      const assigned = assignedAt(store, item.id);
+    function replyFormHtml(item, reply) {
+      const upload = uploads.get(item.id);
+      const label = reply ? '다시 올리기' : '회신 엑셀 올리기';
+      return `<div class="box">
+        <div class="row-actions"><label class="file-button">${label}<input class="reply-file" type="file" accept=".xlsx"></label>
+          ${upload ? `<span><b>${esc(upload.fileName)}</b> (데이터 ${upload.result.행.length}행)</span>` : '<span class="sub">엑셀을 올리면 바로 점검합니다.</span>'}</div>
+        ${upload ? `<div>${issuesHtml(upload.result.확인필요)}</div>` : ''}
+        <label class="field">메모 (자료 없음 등)<textarea class="memo" rows="2">${esc(memos.get(item.id) || '')}</textarea></label>
+        <div class="row-actions"><button type="button" class="submit-reply" ${upload ? '' : 'disabled'}>회신 제출</button>
+          <button type="button" class="ghost open-reassign">재배정 요청</button></div></div>`;
+    }
+
+    function reassignFormHtml(item) {
+      const draft = reassigning.get(item.id);
+      const assigned = new Date(assignedAt(item)).getTime();
+      const late = Date.now() - assigned > TWO_HOURS;
+      const options = orgNames.filter((name) => name !== dept)
+        .map((name) => `<option${draft.희망과 === name ? ' selected' : ''}>${esc(name)}</option>`).join('');
+      return `<div class="box">${late ? '<div><span class="badge warn">배분 후 2시간 경과</span></div>' : ''}
+        <label class="field">사유 (필수)<input class="reason" type="text" value="${esc(draft.사유)}"></label>
+        <label class="field">희망 과<select class="wish"><option value="">선택 안 함</option>${options}</select></label>
+        <div class="row-actions"><button type="button" class="submit-reassign">재배정 요청 제출</button>
+          <button type="button" class="ghost cancel-reassign">취소</button></div></div>`;
+    }
+
+    function reassignedHtml(item) {
+      const request = item.재배정?.at(-1);
+      if (item.상태 !== '재배정요청' || !request) return '';
+      return `<div class="box"><span class="badge bad">재배정 요청함</span> ${esc(request.과)}: ${esc(request.사유)}
+        ${request.희망과 ? ` → 희망 과 ${esc(request.희망과)}` : ''}</div>`;
+    }
+
+    function cardHtml(item) {
+      const reply = item.회신?.[dept];
       const role = item.주관과 === dept ? '주관' : '협조';
       const open = OPEN_STATES.includes(item.상태);
-      return `<tr data-id="${esc(item.id)}" data-assigned="${esc(assigned)}">
-        <td class="state-cell"><span class="badge ${item.상태 === '회신완료' ? 'ok' : ''}">${esc(item.상태)}</span></td>
-        <td>${esc(item.의원)}<div class="sub">문항 ${esc(item.문항번호)} · ${role}</div></td>
-        <td>${esc(item.요구내용)}${item.세부항목 ? `<div class="sub">${esc(item.세부항목)}</div>` : ''}
-          ${item.비고 ? `<div class="sub">※ ${esc(item.비고)}</div>` : ''}</td>
-        <td>${dueHtml(replyDue(item, assigned), item)}</td>
-        <td>${replyCell(item)}</td>
-        <td>${open ? '<button type="button" class="ghost open-reassign">재배정 요청</button>' : '<span class="sub">-</span>'}</td>
-      </tr>${panelHtml(item)}`;
+      let action = '';
+      if (open) action = reassigning.has(item.id) ? reassignFormHtml(item) : replyFormHtml(item, reply);
+      return `<article class="card" data-id="${esc(item.id)}">
+        <div class="card-head">
+          <div><span class="badge ${item.상태 === '회신완료' ? 'ok' : item.상태 === '재배정요청' ? 'bad' : ''}">${esc(item.상태)}</span>
+            <b>${esc(item.의원)} 문항 ${esc(item.문항번호)}</b> <span class="sub">${role}</span></div>
+          ${dueHtml(item, reply)}
+        </div>
+        <p class="question">${esc(item.요구내용)}</p>
+        ${item.세부항목 ? `<div class="sub">${esc(item.세부항목)}</div>` : ''}
+        ${item.비고 ? `<div class="sub">※ ${esc(item.비고)}</div>` : ''}
+        ${pastHtml(item)}${submittedHtml(reply)}${reassignedHtml(item)}${action}
+      </article>`;
+    }
+
+    function mine() {
+      return db.cases.filter((item) => item.주관과 === dept || item.협조과.includes(dept));
     }
 
     function render() {
-      const store = Common.load();
-      const mine = store.cases.filter((item) => item.주관과 === dept || item.협조과.includes(dept));
-      $('rows').innerHTML = mine.map((item) => rowHtml(item, store)).join('');
-      if (!dept) showMessage('과를 선택하면 배분받은 문항이 나옵니다.');
-      return mine.length;
+      if (!dept) {
+        $('cards').innerHTML = '';
+        showMessage('과를 선택하면 배분받은 문항이 나옵니다.');
+        return;
+      }
+      const list = mine();
+      $('cards').innerHTML = list.length ? list.map(cardHtml).join('')
+        : `<div class="empty">${esc(dept)}에 배분된 문항이 없습니다.</div>`;
     }
 
-    function findItem(store, id) {
-      return store.cases.find((item) => item.id === id);
+    // 한 카드만 다시 그린다. 다른 카드에 입력 중인 내용은 그대로 둔다.
+    function renderCard(id) {
+      const item = db.cases.find((entry) => entry.id === id);
+      const element = [...$('cards').children].find((card) => card.dataset.id === id);
+      if (item && element) element.outerHTML = cardHtml(item);
+    }
+
+    function replaceCase(updated) {
+      const index = db.cases.findIndex((entry) => entry.id === updated.id);
+      if (index >= 0) db.cases[index] = updated;
     }
 
     async function readReply(id, file) {
       try {
         const book = XLSX.read(await file.arrayBuffer(), { type: 'array' });
         const table = XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]], { header: 1, defval: '', blankrows: false });
-        const item = findItem(Common.load(), id);
+        const item = db.cases.find((entry) => entry.id === id);
         // 열 구성 비교 기준은 다른 과가 먼저 제출한 회신이다.
         const other = Object.entries(item.회신 ?? {}).find(([name]) => name !== dept);
-        panel = { id, type: 'reply', fileName: file.name, result: ReplyCheck.inspect(table, item, other?.[1].머리글) };
-        render();
+        uploads.set(id, { fileName: file.name, result: ReplyCheck.inspect(table, item, other?.[1].머리글) });
+        renderCard(id);
         showMessage('점검을 마쳤습니다. 결과를 확인하고 제출하세요.');
       } catch (error) {
         showMessage(`엑셀을 읽지 못했습니다: ${file.name} (${error.message})`, true);
       }
     }
 
-    function submitReply() {
-      const store = Common.load();
-      const item = findItem(store, panel.id);
-      const 일시 = new Date().toISOString();
-      item.회신 ??= {};
-      item.회신[dept] = {
-        파일명: panel.fileName, 머리글: panel.result.머리글, 행: panel.result.행,
-        메모: $('memo').value.trim(), 확인필요: panel.result.확인필요, 일시,
-      };
-      // 주관·협조로 지정된 과가 모두 회신해야 회신완료가 된다.
-      const owners = [item.주관과, ...item.협조과];
-      item.상태 = owners.every((name) => item.회신[name]) ? '회신완료' : '회신중';
-      item.일시 = 일시;
-      // 다시 올리면 회신은 교체되지만 제출 기록은 지우지 않는다.
-      store.log.push({ 일시, 작업: '회신', 문항: item.id, 과: dept, 파일명: panel.fileName, 확인필요: panel.result.확인필요.length });
-      Common.save(store);
-      panel = null;
-      render();
-      showMessage(`회신을 제출했습니다. 문항 상태: ${item.상태}`);
+    async function submitReply(id) {
+      const upload = uploads.get(id);
+      try {
+        const { code, body } = await Common.dispatch({
+          작업: '회신', id, 과: dept, 파일명: upload.fileName, 머리글: upload.result.머리글, 행: upload.result.행,
+          메모: (memos.get(id) || '').trim(), 확인필요: upload.result.확인필요,
+        });
+        if (code !== 200) throw new Error(`${body?.error || `제출하지 못했습니다 (${code})`}${code === 409 ? ' 새로고침으로 최신 상태를 확인하세요.' : ''}`);
+        replaceCase(body.문항);
+        uploads.delete(id);
+        memos.delete(id);
+        renderCard(id);
+        showMessage(`회신을 제출했습니다. 문항 상태: ${body.상태}`);
+      } catch (error) {
+        showMessage(error.message, true);
+      }
     }
 
-    function submitReassign() {
-      const 사유 = $('reason').value.trim();
-      if (!사유) {
+    async function submitReassign(id) {
+      const draft = reassigning.get(id);
+      if (!draft.사유.trim()) {
         showMessage('재배정 사유를 입력하세요.', true);
         return;
       }
-      const store = Common.load();
-      const item = findItem(store, panel.id);
-      const 일시 = new Date().toISOString();
-      const 희망과 = $('wish').value;
-      const 경과 = Date.now() - new Date(panel.assigned).getTime() > TWO_HOURS;
-      item.재배정 ??= [];
-      item.재배정.push({ 과: dept, 사유, 희망과, 일시, 경과 });
-      item.상태 = '재배정요청';
-      item.일시 = 일시;
-      store.log.push({ 일시, 작업: '재배정요청', 문항: item.id, 과: dept, 사유, 희망과 });
-      Common.save(store);
-      panel = null;
-      render();
-      showMessage('재배정을 요청했습니다. 총괄 담당이 다시 배분합니다.');
+      try {
+        const { code, body } = await Common.dispatch({ 작업: '재배정요청', id, 과: dept, 사유: draft.사유, 희망과: draft.희망과 });
+        if (code !== 200) throw new Error(`${body?.error || `요청하지 못했습니다 (${code})`}${code === 409 ? ' 새로고침으로 최신 상태를 확인하세요.' : ''}`);
+        replaceCase(body.문항);
+        reassigning.delete(id);
+        uploads.delete(id);
+        renderCard(id);
+        showMessage('재배정을 요청했습니다. 총괄 담당이 다시 배분합니다.');
+      } catch (error) {
+        showMessage(error.message, true);
+      }
     }
 
     function handleClick(event) {
       const button = event.target.closest('button');
-      if (!button) return;
-      if (button.matches('.submit-reply')) submitReply();
-      else if (button.matches('.submit-reassign')) submitReassign();
-      else if (button.matches('.cancel')) {
-        panel = null;
-        render();
+      const card = event.target.closest('.card');
+      if (!button || !card) return;
+      const id = card.dataset.id;
+      if (button.matches('.submit-reply')) submitReply(id);
+      else if (button.matches('.submit-reassign')) submitReassign(id);
+      else if (button.matches('.open-reassign')) {
+        reassigning.set(id, { 사유: '', 희망과: '' });
+        renderCard(id);
+      } else if (button.matches('.cancel-reassign')) {
+        reassigning.delete(id);
+        renderCard(id);
         showMessage('');
-      } else if (button.matches('.open-reassign')) {
-        const row = button.closest('tr');
-        panel = { id: row.dataset.id, type: 'reassign', assigned: row.dataset.assigned };
-        render();
       }
+    }
+
+    async function load() {
+      db = await Common.load();
     }
 
     async function start() {
       orgNames = (await Common.readCsv('data/A부_조직도_26개과.csv')).map((row) => row.과);
+      PastRequests.init(await Common.readCsv('data/접수대장.csv'), Fuse);
       $('dept').insertAdjacentHTML('beforeend', orgNames.map((name) => `<option>${esc(name)}</option>`).join(''));
+      await load();
+
       $('dept').addEventListener('change', (event) => {
         dept = event.target.value;
-        panel = null;
-        const count = render();
-        if (dept) showMessage(count ? `${dept}에 배분된 문항 ${count}건` : `${dept}에 배분된 문항이 없습니다.`);
+        render();
+        if (dept) showMessage(mine().length ? `${dept}에 배분된 문항 ${mine().length}건` : `${dept}에 배분된 문항이 없습니다.`);
       });
-      $('rows').addEventListener('click', handleClick);
-      $('rows').addEventListener('change', (event) => {
-        if (!event.target.matches('.reply-file')) return;
-        const [file] = event.target.files;
-        if (file) readReply(event.target.closest('tr').dataset.id, file);
+      $('refresh').addEventListener('click', async () => {
+        try {
+          await load();
+          render();
+          showMessage(dept ? `새로 읽었습니다. ${dept}에 배분된 문항 ${mine().length}건` : '새로 읽었습니다.');
+        } catch (error) {
+          showMessage(error.message, true);
+        }
+      });
+      $('cards').addEventListener('click', handleClick);
+      $('cards').addEventListener('change', (event) => {
+        if (event.target.matches('.reply-file')) {
+          const [file] = event.target.files;
+          if (file) readReply(event.target.closest('.card').dataset.id, file);
+        } else if (event.target.matches('.wish')) {
+          reassigning.get(event.target.closest('.card').dataset.id).희망과 = event.target.value;
+        }
+      });
+      $('cards').addEventListener('input', (event) => {
+        const id = event.target.closest('.card')?.dataset.id;
+        if (event.target.matches('.memo')) memos.set(id, event.target.value);
+        else if (event.target.matches('.reason')) reassigning.get(id).사유 = event.target.value;
       });
       render();
     }
 
     start().catch((error) => {
       showMessage(`자료를 읽지 못했습니다: ${error.message}. 파일을 더블클릭하지 말고 `
-        + 'python -m http.server 8000 -d web 실행 후 http://localhost:8000 으로 여세요.', true);
+        + 'python -m http.server 8000 -d docs 실행 후 http://localhost:8000 으로 여세요.', true);
     });
   </script>
 </body>

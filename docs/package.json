@@ -1,0 +1,8 @@
+{
+  "name": "national-assembly-tool",
+  "private": true,
+  "description": "국회 요구자료 처리 도구. Vercel 함수(api/app.mjs)가 쓰는 의존성만 둔다.",
+  "dependencies": {
+    "@vercel/blob": "^2.9.0"
+  }
+}

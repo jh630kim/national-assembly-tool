@@ -58,19 +58,21 @@
       });
     }
 
-    try {
-      const { cases } = Common.load();
-      document.getElementById('counts').innerHTML = Common.STATUSES.map((status) => {
-        const count = cases.filter((item) => item.상태 === status).length;
-        return `<div class="count"><b>${count}</b><span>${status}</span></div>`;
-      }).join('');
-      document.getElementById('message').textContent = `전체 ${cases.length}문항`;
-      drawChart(cases);
-    } catch (error) {
-      const message = document.getElementById('message');
-      message.className = 'message error';
-      message.textContent = `저장된 기록을 읽지 못했습니다: ${error.message}`;
-    }
+    (async () => {
+      try {
+        const { cases } = await Common.load();
+        document.getElementById('counts').innerHTML = Common.STATUSES.map((status) => {
+          const count = cases.filter((item) => item.상태 === status).length;
+          return `<div class="count"><b>${count}</b><span>${status}</span></div>`;
+        }).join('');
+        document.getElementById('message').textContent = `전체 ${cases.length}문항`;
+        drawChart(cases);
+      } catch (error) {
+        const message = document.getElementById('message');
+        message.className = 'message error';
+        message.textContent = `저장된 기록을 읽지 못했습니다: ${error.message}`;
+      }
+    })();
   </script>
 </body>
 </html>

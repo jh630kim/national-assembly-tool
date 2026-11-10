@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const source = path.join(__dirname, 'data', 'A부_조직도_26개과.csv');
-const output = path.join(__dirname, 'org.json');
+const output = path.join(__dirname, 'docs', 'api', 'org.json');
 
 function parseCsvLine(line) {
   const cells = [];

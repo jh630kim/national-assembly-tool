@@ -9,6 +9,7 @@
   <script src="lib/tabulator/tabulator.min.js"></script>
   <script src="engine.js"></script>
   <script src="split.js"></script>
+  <script src="flow.js"></script>
   <script src="history.js"></script>
   <script src="common.js"></script>
   <style>
@@ -69,6 +70,7 @@
       <div class="filters">
         <label>검색 <input id="search" type="search" placeholder="의원·요구내용·주관 과"></label>
         <label>상태 <select id="status-filter"><option value="">전체</option></select></label>
+        <button id="refresh" type="button" class="ghost">새로고침</button>
       </div>
       <p class="message" id="assign-message" role="status"></p>
       <div id="case-table"></div>
@@ -84,9 +86,10 @@
     const $ = (id) => document.getElementById(id);
     const PDFJS_DIR = new URL('./lib/pdfjs/', location.href).href;
     // 설계서 상태표: 접수·재배정요청·배분확정일 때만 배분할 수 있다.
-    const ASSIGNABLE = ['접수', '재배정요청', '배분확정'];
+    const ASSIGNABLE = Flow.ASSIGNABLE;
 
     let orgNames = [];
+    let allCases = [];
     let pendingRows = [];
     let pdfjs = null;
     let caseTable = null;
@@ -102,10 +105,6 @@
     function showMessage(id, text, isError = false) {
       $(id).textContent = text;
       $(id).className = isError ? 'message error' : 'message';
-    }
-
-    function now() {
-      return new Date().toISOString();
     }
 
     async function getPdfjs() {
@@ -203,28 +202,24 @@
       return tied ? '동순위' : '';
     }
 
-    function register() {
-      const store = Common.load();
-      const known = new Set(store.cases.map((item) => item.id));
-      let added = 0;
-      for (const row of pendingRows) {
-        const id = `${row.파일명}#${row.문항번호}`;
-        if (known.has(id)) continue;
-        known.add(id);
+    async function register() {
+      $('register').disabled = true;
+      // 후보 계산은 화면에서 하고 결과를 함께 보낸다(설계서 5장). 여러 문항을 한 번에 저장한다.
+      const 문항 = pendingRows.map((row) => {
         const 후보 = engine.classify(row.요구내용);
-        store.cases.push({
-          ...row, id, 상태: '접수', 주관과: '', 협조과: [], 확정방법: '', 후보, 확인필요: needsCheck(후보), 일시: now(),
-        });
-        store.log.push({ 일시: now(), 작업: '접수', 문항: id, 과: '' });
-        added += 1;
+        return { ...row, 후보, 확인필요: needsCheck(후보) };
+      });
+      try {
+        const { code, body } = await Common.dispatch({ 작업: '접수', 문항 });
+        if (code !== 200) throw new Error(body?.error || `등록하지 못했습니다 (${code})`);
+        pendingRows = [];
+        $('preview-area').hidden = true;
+        showMessage('receive-message', `${body.등록}문항을 등록했습니다.${body.건너뜀 ? ` 이미 등록된 ${body.건너뜀}문항은 건너뛰었습니다.` : ''}`);
+        await reload();
+      } catch (error) {
+        $('register').disabled = false;
+        showMessage('receive-message', error.message, true);
       }
-      Common.save(store);
-      const skipped = pendingRows.length - added;
-      pendingRows = [];
-      $('preview-area').hidden = true;
-      showMessage('receive-message', `${added}문항을 등록했습니다.${skipped ? ` 이미 등록된 ${skipped}문항은 건너뛰었습니다.` : ''}`);
-      caseTable.replaceData(store.cases);
-      renderCount();
     }
 
     // ---------- ② 배분 표 ----------
@@ -235,8 +230,9 @@
       return drafts.get(item.id);
     }
 
+    // 비슷한 과거 요구: 1순위 근거 키워드가 든 과거 요구(참고용)
     function pastOf(item) {
-      if (!pastCache.has(item.id)) pastCache.set(item.id, PastRequests.find(item.요구내용));
+      if (!pastCache.has(item.id)) pastCache.set(item.id, PastRequests.find(item.후보[0]?.근거키워드));
       return pastCache.get(item.id);
     }
 
@@ -251,13 +247,13 @@
         ${request.희망과 ? ` → 희망 과 ${esc(request.희망과)}` : ''}${request.경과 ? ' (배분 후 2시간 경과)' : ''}</div>`;
     }
 
-    // 비슷한 과거 요구는 참고용이다. 배분 후보·확정에는 쓰지 않는다.
+    // 과거 이력은 참고용이다. 배분 후보·확정에는 쓰지 않는다.
     function pastHtml(item) {
       const past = pastOf(item);
       if (!past.건수) return '<div class="sub">비슷한 과거 요구 없음</div>';
       const list = past.최근.map((row) => `<li>${esc(row.접수번호)} ${esc(row.요구내용)} → ${esc(row.배분과)} · ${esc(row.처리상태)}</li>`).join('');
       return `<details class="past"><summary>비슷한 과거 요구 ${past.건수}건 · 주로 ${esc(past.주로.과)}(${past.주로.건수}건)</summary>
-        <ul>${list}</ul><div class="sub">주제어 「${esc(past.주제)}」로 찾은 참고 자료이며 배분을 정하지 않습니다.</div></details>`;
+        <ul>${list}</ul><div class="sub">1순위 근거 키워드: 「${esc(past.키워드)}」 · 이 키워드가 든 과거 요구이며, 참고용으로 배분을 정하지 않습니다.</div></details>`;
     }
 
     function statusFormatter(cell) {
@@ -272,7 +268,7 @@
       const item = cell.getData();
       return `${esc(item.요구내용)}${item.세부항목 ? `<div class="sub">${esc(item.세부항목)}</div>` : ''}
         ${item.비고 ? `<div class="sub">※ ${esc(item.비고)}</div>` : ''}
-        ${item.상태 === '재배정요청' ? reassignHtml(item.재배정.at(-1)) : ''}${pastHtml(item)}`;
+        ${item.상태 === '재배정요청' && item.재배정?.length ? reassignHtml(item.재배정.at(-1)) : ''}${pastHtml(item)}`;
     }
 
     function updateConfirmButton(item) {
@@ -320,34 +316,36 @@
       return button;
     }
 
-    function confirmCase(id) {
-      const store = Common.load();
-      const item = store.cases.find((entry) => entry.id === id);
+    async function confirmCase(id) {
+      const item = allCases.find((entry) => entry.id === id);
       const draft = drafts.get(id);
-      item.주관과 = draft.주관과;
-      item.협조과 = draft.협조과.filter((name) => name !== item.주관과);
-      item.확정방법 = item.주관과 === item.후보[0]?.과 ? '규칙' : '수정';
-      item.상태 = '배분확정';
-      item.일시 = now();
-      // 재배분 이력도 지우지 않도록 확정할 때마다 기록을 덧붙인다(처리지침 제3장 제5조).
-      store.log.push({ 일시: item.일시, 작업: '배분', 문항: item.id, 과: item.주관과, 협조과: item.협조과, 확정방법: item.확정방법 });
-      Common.save(store);
-      drafts.set(id, { 주관과: item.주관과, 협조과: [...item.협조과] });
-      const row = caseTable.getRow(id);
-      row.update(item);
-      row.reformat();
-      renderCount();
+      const 확정방법 = draft.주관과 === item.후보[0]?.과 ? '규칙' : '수정';
+      confirmButtons.get(id).disabled = true;
+      try {
+        const { code, body } = await Common.dispatch({
+          작업: '배분', id, 주관과: draft.주관과, 협조과: draft.협조과, 확정방법,
+        });
+        if (code !== 200) throw new Error(`${body?.error || `확정하지 못했습니다 (${code})`}${code === 409 ? ' 새로고침으로 최신 상태를 확인하세요.' : ''}`);
+        allCases[allCases.indexOf(item)] = body.문항;
+        drafts.set(id, { 주관과: body.문항.주관과, 협조과: [...body.문항.협조과] });
+        const row = caseTable.getRow(id);
+        row.update(body.문항);
+        row.reformat();
+        renderCount();
+      } catch (error) {
+        updateConfirmButton(item);
+        showMessage('assign-message', error.message, true);
+      }
     }
 
     function renderCount() {
-      const cases = Common.load().cases;
-      const done = cases.filter((item) => item.상태 === '배분확정').length;
-      if (!cases.length) {
+      if (!allCases.length) {
         showMessage('assign-message', '등록된 문항이 없습니다. 위에서 요구서를 접수하세요.');
         return;
       }
-      const shown = caseTable?.getDataCount('active') ?? cases.length;
-      showMessage('assign-message', `전체 ${cases.length}문항 · 배분확정 ${done}문항 · 표시 ${shown}문항`);
+      const done = allCases.filter((item) => item.상태 === '배분확정').length;
+      const shown = caseTable?.getDataCount('active') ?? allCases.length;
+      showMessage('assign-message', `전체 ${allCases.length}문항 · 배분확정 ${done}문항 · 표시 ${shown}문항`);
     }
 
     function matchesFilter(item) {
@@ -393,12 +391,22 @@
       }, true);
     }
 
+    // 저장된 기록을 다시 읽어 표를 새로 그린다(서버 모드에서는 다른 사람의 변경이 보인다).
+    async function reload(clearDrafts = false) {
+      const db = await Common.load();
+      allCases = db.cases;
+      if (clearDrafts) drafts.clear();
+      if (caseTable) caseTable.replaceData(allCases);
+      else buildCaseTable(allCases);
+      renderCount();
+    }
+
     async function start() {
       await engine.initialize('data/배분기준표_보강.csv', 'data/A부_조직도_26개과.csv');
       orgNames = (await Common.readCsv('data/A부_조직도_26개과.csv')).map((row) => row.과);
       PastRequests.init(await Common.readCsv('data/접수대장.csv'), Fuse);
       $('status-filter').insertAdjacentHTML('beforeend', Common.STATUSES.map((name) => `<option>${esc(name)}</option>`).join(''));
-      buildCaseTable(Common.load().cases);
+      await reload();
 
       $('pdf-input').addEventListener('change', async (event) => {
         const files = [...event.target.files];
@@ -411,6 +419,13 @@
         if (file) await handleCsv(file);
       });
       $('register').addEventListener('click', register);
+      $('refresh').addEventListener('click', async () => {
+        try {
+          await reload(true);
+        } catch (error) {
+          showMessage('assign-message', error.message, true);
+        }
+      });
       $('search').addEventListener('input', (event) => {
         filter.text = event.target.value;
         caseTable.refreshFilter();
