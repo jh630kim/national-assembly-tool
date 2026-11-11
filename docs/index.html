@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>국회 요구자료 처리 현황</title>
   <script src="lib/chartjs/chart.umd.min.js"></script>
+  <script src="lib/xlsx.full.min.js"></script>
   <script src="common.js"></script>
   <style>
     .chart-box { position:relative; height:260px; margin-top:16px; }
@@ -15,12 +16,19 @@
     .actions { display:flex; flex-wrap:wrap; gap:8px; }
     .actions a { padding:8px 18px; border-radius:6px; background:var(--brand); color:#fff; text-decoration:none; }
     .actions span { padding:8px 18px; border-radius:6px; background:#eceff3; color:#8a94a0; }
+    .log-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; }
+    .log-head h2 { margin-bottom:0; }
+    .log-count { color:var(--muted); font-size:14px; }
+    .log-filters { display:flex; flex-wrap:wrap; align-items:end; gap:10px; margin:14px 0; }
+    .log-filters label { display:grid; gap:3px; font-size:14px; }
+    .log-filters select,.log-filters input { font:inherit; padding:6px; min-width:150px; }
+    .log-filters input { width:190px; }
   </style>
 </head>
 <body>
   <main>
     <h1>국회 요구자료 처리 현황</h1>
-    <p class="lead">문항이 지금 어느 단계에 있는지 확인하고 화면으로 이동합니다. 기록은 이 브라우저에만 저장됩니다.</p>
+    <p class="lead">문항이 지금 어느 단계에 있는지 확인하고 화면으로 이동합니다. 기록의 저장 위치는 화면 위에 표시됩니다.</p>
     <section class="panel">
       <h2>상태별 문항 수</h2>
       <div class="counts" id="counts"></div>
@@ -35,9 +43,73 @@
         <a href="collect.html">취합</a>
       </div>
     </section>
+    <section class="panel" aria-labelledby="log-title">
+      <div class="log-head"><h2 id="log-title">처리 기록</h2><span id="log-count" class="log-count" aria-live="polite">0건 / 전체 0건</span></div>
+      <div class="log-filters" aria-label="처리 기록 골라 보기">
+        <label>작업<select id="log-action"><option value="">전체</option></select></label>
+        <label>과<select id="log-dept"><option value="">전체</option></select></label>
+        <label>문항 앞부분<input id="log-case" type="text" autocomplete="off" placeholder="문항 ID 앞부분"></label>
+        <button id="log-export" type="button">처리 기록 엑셀</button>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>일시 (한국시간)</th><th>작업</th><th>문항</th><th>과</th><th>지금 상태</th></tr></thead>
+        <tbody id="log-body"></tbody></table></div>
+    </section>
   </main>
   <script>
     Common.renderNav('index.html');
+    const esc = Common.escapeHtml;
+    let db = { cases: [], log: [] };
+
+    function koreanTime(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('ko-KR', {
+        timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+      }).format(date);
+    }
+
+    // 현재 필터의 결과를 표와 엑셀에 똑같이 사용한다.
+    function filteredLogs() {
+      const action = document.getElementById('log-action').value;
+      const dept = document.getElementById('log-dept').value;
+      const prefix = document.getElementById('log-case').value.trim();
+      const states = new Map(db.cases.map((item) => [item.id, item.상태]));
+      return db.log.filter((entry) => (!action || entry.작업 === action)
+        && (!dept || entry.과 === dept) && (!prefix || String(entry.문항 || '').startsWith(prefix)))
+        .map((entry) => ({ 일시: koreanTime(entry.일시), 작업: entry.작업 || '', 문항: entry.문항 || '',
+          과: entry.과 || '', 지금상태: states.get(entry.문항) || '' }));
+    }
+
+    function drawLogs() {
+      const rows = filteredLogs();
+      document.getElementById('log-count').textContent = `${rows.length}건 / 전체 ${db.log.length}건`;
+      document.getElementById('log-body').innerHTML = rows.length ? rows.map((row) =>
+        `<tr><td>${esc(row.일시)}</td><td>${esc(row.작업)}</td><td>${esc(row.문항)}</td><td>${esc(row.과)}</td><td>${esc(row.지금상태)}</td></tr>`).join('')
+        : '<tr><td colspan="5">해당하는 처리 기록이 없습니다.</td></tr>';
+    }
+
+    function fillLogFilters() {
+      for (const [id, field] of [['log-action', '작업'], ['log-dept', '과']]) {
+        const select = document.getElementById(id);
+        const values = [...new Set(db.log.map((entry) => entry[field]).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko'));
+        select.innerHTML = '<option value="">전체</option>' + values.map((value) => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
+      }
+    }
+
+    document.getElementById('log-action').addEventListener('change', drawLogs);
+    document.getElementById('log-dept').addEventListener('change', drawLogs);
+    document.getElementById('log-case').addEventListener('input', drawLogs);
+    document.getElementById('log-export').addEventListener('click', () => {
+      const rows = filteredLogs();
+      const sheet = XLSX.utils.aoa_to_sheet([
+        ['일시', '작업', '문항', '과', '지금상태'],
+        ...rows.map((row) => [row.일시, row.작업, row.문항, row.과, row.지금상태]),
+      ]);
+      const book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, sheet, '처리 기록');
+      XLSX.writeFile(book, '처리기록_국회요구자료.xlsx');
+    });
 
     // 상태별 문항 수를 가로 막대 차트로 그린다. 숫자 카드와 같은 값이며, 차트가 안 뜨면 카드로 확인한다.
     function drawChart(cases) {
@@ -60,13 +132,16 @@
 
     (async () => {
       try {
-        const { cases } = await Common.load();
+        db = await Common.load();
+        const { cases } = db;
         document.getElementById('counts').innerHTML = Common.STATUSES.map((status) => {
           const count = cases.filter((item) => item.상태 === status).length;
           return `<div class="count"><b>${count}</b><span>${status}</span></div>`;
         }).join('');
         document.getElementById('message').textContent = `전체 ${cases.length}문항`;
         drawChart(cases);
+        fillLogFilters();
+        drawLogs();
       } catch (error) {
         const message = document.getElementById('message');
         message.className = 'message error';
