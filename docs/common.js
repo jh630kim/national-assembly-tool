@@ -128,6 +128,11 @@
     return result;
   }
 
+  // AI 추천은 저장 위치와 관계없이 서버의 키로만 호출한다.
+  function aiRecommend(요구내용) {
+    return callApi('POST', { 작업: 'AI추천', 요구내용 });
+  }
+
   function renderNav(current) {
     const style = document.createElement('style');
     style.textContent = STYLE;
@@ -142,5 +147,5 @@
       + `<div class="store-note ${mode}" role="status">${MODE_NOTE[mode]}</div>`);
   }
 
-  root.Common = { mode, STATUSES, load, dispatch, readCsv, escapeHtml, renderNav };
+  root.Common = { mode, STATUSES, load, dispatch, aiRecommend, readCsv, escapeHtml, renderNav };
 })(globalThis);

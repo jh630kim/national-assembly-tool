@@ -32,6 +32,15 @@
     .past li { margin-bottom:2px; }
     .state-cell .badge { display:block; width:max-content; margin-bottom:4px; }
     .confirm { white-space:nowrap; }
+    .ai-tools { margin-top:8px; }
+    .ai-result { margin-top:6px; padding:8px; border-radius:6px; background:#f0edfa; color:#3f3470; font-size:13px; }
+    .ai-result ol { margin:4px 0 0; padding-left:20px; }
+    .ai-result li { margin-bottom:4px; }
+    .ai-result button { padding:2px 7px; margin-left:4px; }
+    .ai-trigger.is-loading::before { content:''; display:inline-block; width:10px; height:10px; margin-right:6px;
+      border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:ai-spin .7s linear infinite; }
+    @keyframes ai-spin { to { transform:rotate(360deg); } }
+    @media (prefers-reduced-motion:reduce) { .ai-trigger.is-loading::before { animation:none; } }
     /* Tabulator 기본 서식을 이 프로젝트 화면에 맞춘다. */
     .tabulator { font:inherit; font-size:14px; border:1px solid var(--line); border-radius:6px; background:var(--panel); }
     .tabulator .tabulator-header { background:var(--brand-soft); border-bottom:1px solid var(--line); color:var(--ink); }
@@ -97,6 +106,8 @@
     const filter = { text: '', status: '' };
     // 확정 전에 사람이 고른 주관 과·협조 과. 표를 다시 그려도 선택이 사라지지 않게 따로 둔다.
     const drafts = new Map();
+    const aiResults = new Map();
+    const aiSelected = new Map();
     const confirmButtons = new Map();
     const pastCache = new Map();
 
@@ -276,6 +287,36 @@
       if (button) button.disabled = !draftOf(item).주관과 || !ASSIGNABLE.includes(item.상태);
     }
 
+    function aiResultHtml(result) {
+      if (!result) return '';
+      if (result.해당없음 || !result.후보.length) return 'AI가 추천할 과를 찾지 못했습니다. 담당자가 직접 확인해 주세요.';
+      return `<strong>AI 후보 · 담당자 확인 필요</strong><ol>${result.후보.map((entry) => (
+        `<li>${esc(entry.과)} — ${esc(entry.근거)} <button type="button" class="ghost" data-ai-dept="${esc(entry.과)}">이 과 선택</button></li>`
+      )).join('')}</ol>`;
+    }
+
+    async function askAi(item, box, button) {
+      if (!window.confirm('이 문항은 교육용 가상 자료이며 개인정보가 없습니까? 확인한 경우에만 요구내용을 OpenAI에 보냅니다.')) return;
+      const panel = box.querySelector('.ai-result');
+      button.disabled = true;
+      button.classList.add('is-loading');
+      button.textContent = 'AI 추천 중…';
+      panel.textContent = 'AI 후보를 확인하고 있습니다.';
+      try {
+        const { code, body } = await Common.aiRecommend(item.요구내용);
+        if (code !== 200) throw new Error(body?.error || `AI 추천 오류 (${code})`);
+        aiResults.set(item.id, body);
+        panel.innerHTML = aiResultHtml(body);
+      } catch (error) {
+        panel.textContent = error.message;
+      } finally {
+        button.disabled = false;
+        button.classList.remove('is-loading');
+        button.textContent = 'AI 추천';
+        caseTable.getRow(item.id)?.normalizeHeight();
+      }
+    }
+
     function deptFormatter(cell) {
       const item = cell.getData();
       const draft = draftOf(item);
@@ -285,10 +326,14 @@
         ${draft.협조과.includes(name) ? 'checked' : ''} ${name === draft.주관과 ? 'disabled' : ''}> ${esc(name)}</label>`).join('');
       box.innerHTML = `<select aria-label="주관 과"><option value="">과 선택</option>${options}</select>
         <details><summary>협조 과 <span class="helper-count">${draft.협조과.length}</span>개</summary>
-        <div class="helpers">${helpers}</div></details>`;
+        <div class="helpers">${helpers}</div></details>
+        ${!item.후보.length && ASSIGNABLE.includes(item.상태) ? `<div class="ai-tools"><button type="button" class="ghost ai-trigger"
+          ${Common.mode !== 'server' ? 'disabled title="AI 추천은 Vercel 서버에서 사용할 수 있습니다."' : ''}>AI 추천</button>
+          <div class="ai-result" role="status">${aiResultHtml(aiResults.get(item.id))}</div></div>` : ''}`;
       const count = box.querySelector('.helper-count');
       box.querySelector('select').addEventListener('change', (event) => {
         draft.주관과 = event.target.value;
+        aiSelected.delete(item.id);
         for (const check of box.querySelectorAll('.helpers input')) {
           check.disabled = check.value === draft.주관과;
           if (check.disabled) check.checked = false;
@@ -300,6 +345,15 @@
       box.querySelector('.helpers').addEventListener('change', () => {
         draft.협조과 = [...box.querySelectorAll('.helpers input:checked:not(:disabled)')].map((check) => check.value);
         count.textContent = draft.협조과.length;
+      });
+      box.querySelector('.ai-trigger')?.addEventListener('click', (event) => askAi(item, box, event.currentTarget));
+      box.querySelector('.ai-result')?.addEventListener('click', (event) => {
+        const name = event.target.closest('[data-ai-dept]')?.dataset.aiDept;
+        if (!name || !orgNames.includes(name)) return;
+        const select = box.querySelector('select');
+        select.value = name;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        aiSelected.set(item.id, name);
       });
       return box;
     }
@@ -319,7 +373,8 @@
     async function confirmCase(id) {
       const item = allCases.find((entry) => entry.id === id);
       const draft = drafts.get(id);
-      const 확정방법 = draft.주관과 === item.후보[0]?.과 ? '규칙' : '수정';
+      const 확정방법 = aiSelected.get(id) === draft.주관과 ? 'AI'
+        : draft.주관과 === item.후보[0]?.과 ? '규칙' : '수정';
       confirmButtons.get(id).disabled = true;
       try {
         const { code, body } = await Common.dispatch({
@@ -328,6 +383,7 @@
         if (code !== 200) throw new Error(`${body?.error || `확정하지 못했습니다 (${code})`}${code === 409 ? ' 새로고침으로 최신 상태를 확인하세요.' : ''}`);
         allCases[allCases.indexOf(item)] = body.문항;
         drafts.set(id, { 주관과: body.문항.주관과, 협조과: [...body.문항.협조과] });
+        aiSelected.delete(id);
         const row = caseTable.getRow(id);
         row.update(body.문항);
         row.reformat();

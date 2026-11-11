@@ -127,9 +127,41 @@ async function main() {
   check('재배정요청 후 다시 배분 가능, 재배정 이력은 남음', r.code === 200 && r.body.상태 === '배분확정' && r.body.문항.재배정.length === 1);
 
   // ---- 그 밖의 거부 ----
-  for (const action of ['AI추천', '보완요청', '확정']) {
+  for (const action of ['보완요청', '확정']) {
     await expectError(`'${action}'은 아직 지원하지 않음 400`, { 작업: action, id: id1 }, 400);
   }
+  // OpenAI 응답을 가짜로 주입해 실제 네트워크·Blob에 연결하지 않고 세 결과를 확인한다.
+  const aiStore = fakeStore();
+  let sent;
+  let fakeContent = '';
+  const aiHandle = createHandler(aiStore, org, {
+    apiKey: 'fake-test-key',
+    fetch: async (url, init) => {
+      sent = { url, init };
+      return { ok: true, json: async () => ({ choices: [{ message: { content: fakeContent } }] }) };
+    },
+  });
+  const aiPost = async (handler) => {
+    const response = await handler(new Request('http://localhost/api/app', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 작업: 'AI추천', 요구내용: '신산업 현황' }),
+    }));
+    return { code: response.status, body: await response.json() };
+  };
+  fakeContent = JSON.stringify({ 후보: [{ 과: '산업정책과', 근거: '신산업 정책을 담당합니다.' }, { 과: '안전정책과', 근거: '안전 정책을 담당합니다.' }], 해당없음: false });
+  let ai = await aiPost(aiHandle);
+  const payload = JSON.parse(sent.init.body);
+  check('AI추천: 조직도 안 후보·Chat Completions 설정', ai.code === 200 && ai.body.후보.length === 2 && !ai.body.해당없음
+    && sent.url.endsWith('/chat/completions') && payload.model === 'gpt-4o-mini' && payload.temperature === 0
+    && payload.response_format.type === 'json_object' && aiStore.reads === 0 && aiStore.writes === 0, JSON.stringify(ai.body));
+  fakeContent = JSON.stringify({ 후보: [{ 과: '없는과', 근거: '잘못된 과입니다.' }, { 과: '산업정책과', 근거: '신산업 정책을 담당합니다.' }, { 과: '산업정책과', 근거: '중복입니다.' }], 해당없음: false });
+  ai = await aiPost(aiHandle);
+  check('AI추천: 조직도 밖 과·중복 제거', ai.code === 200 && ai.body.후보.length === 1 && ai.body.후보[0].과 === '산업정책과', JSON.stringify(ai.body));
+  fakeContent = JSON.stringify({ 후보: [], 해당없음: true });
+  ai = await aiPost(aiHandle);
+  check('AI추천: 후보 없으면 해당없음', ai.code === 200 && ai.body.후보.length === 0 && ai.body.해당없음 === true, JSON.stringify(ai.body));
+  ai = await aiPost(createHandler(aiStore, org, { apiKey: '' }));
+  check('AI추천: 환경변수 없으면 500과 안내', ai.code === 500 && ai.body.error.includes('OPENAI_API_KEY'), JSON.stringify(ai.body));
   await expectError('알 수 없는 작업 400', { 작업: '삭제', id: id1 }, 400);
   await expectError('작업 없음 400', { id: id1 }, 400);
   const before = store.writes;
