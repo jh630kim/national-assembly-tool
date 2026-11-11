@@ -10,7 +10,7 @@
     { label: '시작 화면', href: 'index.html' },
     { label: '배분', href: 'assign.html' },
     { label: '현업 회신', href: 'dept.html' },
-    { label: '취합', href: null },
+    { label: '취합', href: 'collect.html' },
   ];
   const MODE_NOTE = {
     server: '저장 위치: 서버(Vercel Blob) · 이 주소를 여는 모든 사람이 같은 기록을 봅니다.',

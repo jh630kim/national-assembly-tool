@@ -13,7 +13,7 @@
   const REPLYABLE = ['배분확정', '회신중', '보완요청'];
   const REASSIGNABLE = ['배분확정', '회신중', '보완요청'];
   // 이후 단계(S7·S8)에서 같은 파일에 추가한다.
-  const LATER_STAGE = ['AI추천', '보완요청', '확정'];
+  const LATER_STAGE = ['AI추천'];
   const TWO_HOURS = 2 * 60 * 60 * 1000;
   const MAX_INTAKE = 500;
   const MAX_ROWS = 5000;
@@ -136,6 +136,7 @@
     const state = wrongState(item, '회신', REPLYABLE);
     if (state) return state;
     if (!owners(item).includes(dept)) return fail(403, `${dept}는 이 문항의 담당 과가 아님`);
+    if (item.상태 === '보완요청' && item.보완대상 !== dept) return fail(403, `${dept}는 보완 요청 대상 과가 아님`);
     item.회신 = item.회신 || {};
     item.회신[dept] = {
       파일명: text(request.파일명),
@@ -147,6 +148,7 @@
     };
     // 주관·협조로 지정된 과가 모두 회신해야 회신완료가 된다.
     item.상태 = owners(item).every((name) => item.회신[name]) ? '회신완료' : '회신중';
+    if (item.보완대상 === dept) item.보완대상 = '';
     item.일시 = now;
     db.log.push({ 일시: now, 작업: '회신', 문항: item.id, 과: dept, 파일명: item.회신[dept].파일명, 확인필요: item.회신[dept].확인필요.length });
     return { code: 200, body: { ok: true, 상태: item.상태, 문항: copy(item) } };
@@ -177,7 +179,41 @@
     return { code: 200, body: { ok: true, 상태: item.상태, 문항: copy(item) } };
   }
 
-  const ACTIONS = { 접수: intake, 배분: assign, 회신: reply, 재배정요청: reassign };
+  function supplement(db, request, names, now) {
+    const found = findCase(db, request);
+    if (found.error) return found.error;
+    const item = found.item;
+    const state = wrongState(item, '보완을 요청', ['회신중', '회신완료']);
+    if (state) return state;
+    const dept = text(request.과);
+    const reason = text(request.사유);
+    if (!names.has(dept) || !owners(item).includes(dept) || !item.회신?.[dept]) return fail(400, '회신한 담당 과를 선택하세요.');
+    if (!reason) return fail(400, '보완 사유가 필요합니다.');
+    item.보완 = item.보완 || [];
+    item.보완.push({ 과: dept, 사유: reason, 일시: now });
+    item.보완대상 = dept;
+    item.상태 = '보완요청';
+    item.일시 = now;
+    db.log.push({ 일시: now, 작업: '보완요청', 문항: item.id, 과: dept, 사유: reason });
+    return { code: 200, body: { ok: true, 상태: item.상태, 문항: copy(item) } };
+  }
+
+  function confirm(db, request, names, now) {
+    const found = findCase(db, request);
+    if (found.error) return found.error;
+    const item = found.item;
+    const state = wrongState(item, '확정', ['회신완료']);
+    if (state) return state;
+    const comment = text(request.코멘트);
+    if (!comment) return fail(400, '확정 코멘트가 필요합니다.');
+    item.확정코멘트 = comment;
+    item.상태 = '확정';
+    item.일시 = now;
+    db.log.push({ 일시: now, 작업: '확정', 문항: item.id, 과: '', 코멘트: comment });
+    return { code: 200, body: { ok: true, 상태: item.상태, 문항: copy(item) } };
+  }
+
+  const ACTIONS = { 접수: intake, 배분: assign, 회신: reply, 재배정요청: reassign, 보완요청: supplement, 확정: confirm };
 
   // db: {cases, log}, 요청: {작업, ...}, 조직도: 과 이름 목록 또는 {과} 목록, 옵션.now: 시험용 현재 시각
   function apply(db, request, org, options) {

@@ -127,9 +127,16 @@ async function main() {
   check('재배정요청 후 다시 배분 가능, 재배정 이력은 남음', r.code === 200 && r.body.상태 === '배분확정' && r.body.문항.재배정.length === 1);
 
   // ---- 그 밖의 거부 ----
-  for (const action of ['보완요청', '확정']) {
-    await expectError(`'${action}'은 아직 지원하지 않음 400`, { 작업: action, id: id1 }, 400);
-  }
+  await expectError('확정: 회신완료가 아니면 409', { 작업: '확정', id: id2, 코멘트: '확인' }, 409);
+  await expectError('보완요청: 사유 없음 400', { 작업: '보완요청', id: id1, 과: '산업정책과', 사유: '' }, 400);
+  r = await post({ 작업: '보완요청', id: id1, 과: '산업정책과', 사유: '숫자 대조 요청' });
+  check('보완요청 200: 대상 과와 사유 기록', r.code === 200 && r.body.문항.보완대상 === '산업정책과' && r.body.문항.보완[0].사유 === '숫자 대조 요청');
+  await expectError('보완 대상이 아닌 과의 재회신 403', reply('안전정책과'), 403);
+  r = await post(reply('산업정책과'));
+  check('보완 대상 과 재회신 후 회신완료', r.code === 200 && r.body.상태 === '회신완료' && r.body.문항.보완.length === 1);
+  await expectError('확정: 코멘트 없음 400', { 작업: '확정', id: id1, 코멘트: '' }, 400);
+  r = await post({ 작업: '확정', id: id1, 코멘트: '원본 대조 완료' });
+  check('확정 200: 코멘트 저장', r.code === 200 && r.body.문항.확정코멘트 === '원본 대조 완료');
   // OpenAI 응답을 가짜로 주입해 실제 네트워크·Blob에 연결하지 않고 세 결과를 확인한다.
   const aiStore = fakeStore();
   let sent;

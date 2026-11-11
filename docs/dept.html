@@ -159,7 +159,7 @@
     function cardHtml(item) {
       const reply = item.회신?.[dept];
       const role = item.주관과 === dept ? '주관' : '협조';
-      const open = OPEN_STATES.includes(item.상태);
+      const open = OPEN_STATES.includes(item.상태) && (item.상태 !== '보완요청' || item.보완대상 === dept);
       let action = '';
       if (open) action = reassigning.has(item.id) ? reassignFormHtml(item) : replyFormHtml(item, reply);
       return `<article class="card" data-id="${esc(item.id)}">
@@ -171,7 +171,8 @@
         <p class="question">${esc(item.요구내용)}</p>
         ${item.세부항목 ? `<div class="sub">${esc(item.세부항목)}</div>` : ''}
         ${item.비고 ? `<div class="sub">※ ${esc(item.비고)}</div>` : ''}
-        ${pastHtml(item)}${submittedHtml(reply)}${reassignedHtml(item)}${action}
+        ${pastHtml(item)}${submittedHtml(reply)}${reassignedHtml(item)}
+        ${item.상태 === '보완요청' ? `<div class="box"><b>보완 요청: ${esc(item.보완대상 || '')}</b> · ${esc(item.보완?.at(-1)?.사유 || '')}</div>` : ''}${action}
       </article>`;
     }
 
@@ -219,6 +220,7 @@
 
     async function submitReply(id) {
       const upload = uploads.get(id);
+      if (upload?.result.확인필요.length && !window.confirm(`확인필요 ${upload.result.확인필요.length}건이 있습니다. 내용을 확인하고 회신을 제출하시겠습니까?`)) return;
       try {
         const { code, body } = await Common.dispatch({
           작업: '회신', id, 과: dept, 파일명: upload.fileName, 머리글: upload.result.머리글, 행: upload.result.행,
